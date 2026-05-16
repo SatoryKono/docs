@@ -1,0 +1,111 @@
+---
+title: "BioETL quickstart: install, run, and export data"
+description: "Learn how to install BioETL, run your first ChEMBL pipeline, and export analysis-ready Delta Lake data to CSV in under five minutes."
+sidebarTitle: "Quick Start"
+---
+
+BioETL is a local Python framework that fetches bioactivity data from public databases, normalizes it through a three-layer medallion architecture, and writes analysis-ready Delta Lake tables to your machine. This guide takes you from a fresh clone to exported ChEMBL activity data in a few minutes.
+
+<Note>
+  BioETL runs entirely on your local machine. No Docker, Redis, or cloud services are required.
+</Note>
+
+## Prerequisites
+
+Before you install BioETL, make sure you have the following:
+
+- **Python 3.12+** — [Download from python.org](https://www.python.org/downloads/)
+- **uv** (recommended) — The package manager used by the maintained install path. Install with `pip install uv` or see the [uv docs](https://docs.astral.sh/uv/).
+- **Git** — For cloning the repository.
+- **Make** — Optional but recommended. On Windows, install via Chocolatey (`choco install make`) or use WSL.
+
+## Installation and first run
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone BioETL and move into the project directory.
+
+    ```bash
+    git clone https://github.com/SatoryKono/BioactivityDataAcquisition.git
+    cd BioactivityDataAcquisition
+    ```
+  </Step>
+
+  <Step title="Install dependencies">
+    Run the three-command bootstrap. `make install` creates a virtual environment and installs all runtime and development dependencies via `uv`. `make test-deps` verifies that critical packages like `polars`, `pandas`, and `pandera` are correctly installed.
+
+    ```bash
+    make install
+    make test-deps
+    make setup-plugins
+    ```
+
+    <Tip>
+      If `make` is not available, you can install manually with `uv sync --extra dev --extra tracing` instead.
+    </Tip>
+  </Step>
+
+  <Step title="Run your first pipeline">
+    Fetch 100 ChEMBL bioactivity records to verify your setup end to end.
+
+    ```bash
+    bioetl run --pipeline chembl_activity --limit 100
+    ```
+
+    BioETL will print progress as it fetches, validates, and writes data through each layer. The first run takes roughly 30–60 seconds depending on your connection speed.
+  </Step>
+
+  <Step title="Inspect your results">
+    Preview the first rows of the activity table directly in your terminal, then export to CSV for further analysis.
+
+    ```bash
+    bioetl export chembl.activity --preview
+    ```
+
+    ```bash
+    bioetl export chembl.activity
+    ```
+
+    The exported CSV lands in your current directory. You can open it in any tool that reads CSV or Parquet files.
+  </Step>
+</Steps>
+
+## What happens when you run a pipeline
+
+When you run `bioetl run --pipeline chembl_activity`, BioETL moves your data through three layers:
+
+1. **Bronze** — Raw API responses are written to disk as JSONL files compressed with zstd. Nothing is transformed at this stage; the Bronze layer is a faithful record of what the API returned.
+2. **Silver** — BioETL normalizes field names, applies schema validation with Pandera, and writes a cleaned Delta Lake table. Records that fail validation go to quarantine rather than corrupting your dataset.
+3. **Gold** — Aggregated summaries are computed from the Silver table and written as a second Delta Lake table. Gold data is optimized for reporting and downstream analysis.
+
+After a successful run, your `data/` directory will look like this:
+
+```text
+data/
+└── output/
+    ├── bronze/chembl/activity/     # Raw API responses (JSONL + zstd)
+    ├── silver/chembl/activity/     # Cleaned Delta Lake table
+    ├── gold/chembl/activity/       # Aggregated table
+    ├── checkpoints/                # Pipeline state for resume
+    └── quarantine/                 # Failed records for review
+```
+
+The `checkpoints/` directory lets you resume an interrupted run without re-fetching data you already have. The `quarantine/` directory collects records that failed validation so you can inspect them without losing your clean data.
+
+## Common commands
+
+| Task | Command |
+|------|---------|
+| List pipelines | `bioetl config list-pipelines` |
+| Run pipeline | `bioetl run --pipeline NAME` |
+| Resume interrupted run | `bioetl run --pipeline NAME --resume` |
+| Export to CSV | `bioetl export TABLE` |
+| Inspect quarantine | `bioetl quarantine inspect --pipeline NAME` |
+
+## Next steps
+
+Once your first pipeline is working, explore what BioETL can do:
+
+- [Running pipelines](/guides/running-pipelines) — Full pipeline execution options, resume behavior, and run types.
+- [Pipeline configuration](/guides/pipeline-configuration) — Customize limits, output paths, validation thresholds, and provider settings.
+- [CLI overview](/cli/overview) — Complete reference for every `bioetl` command and flag.

@@ -1,0 +1,191 @@
+---
+title: "Pipeline checkpoints, resume, and bit-exact replay"
+sidebarTitle: "Checkpoints"
+description: "BioETL saves pipeline state to checkpoint files so interrupted runs can resume mid-stream, and cached Bronze data enables strict bit-exact replay."
+---
+
+Every BioETL pipeline run saves its progress to a checkpoint file. If a run is interrupted — by a network error, a DQ threshold breach, or a manual Ctrl+C — you can resume from the last saved offset rather than starting over. For stronger reproducibility guarantees, BioETL also supports exact replay: re-running Silver and Gold processing against cached Bronze files to produce bit-identical outputs.
+
+## What a checkpoint contains
+
+A checkpoint is a JSON file written to `data/output/checkpoints/{pipeline-name}.json`. It captures the execution state at the last saved offset:
+
+```json
+{
+  "pipeline": "chembl_activity",
+  "run_id": "550e8400-e29b-41d4-a716-446655440000",
+  "metadata": {
+    "records_processed": 4200
+  },
+  "version": "2.0"
+}
+```
+
+The checkpoint interval is configurable. By default BioETL saves state every 1,000 records (`BIOETL_PIPELINE__CHECKPOINT_INTERVAL`). Checkpoints are automatically deleted after a successful pipeline run.
+
+The flat checkpoint layout looks like this:
+
+```text
+data/output/checkpoints/
+├── chembl_activity.json
+├── chembl_molecule.json
+├── pubchem_compound.json
+└── composite_publication.json
+```
+
+## Run types
+
+BioETL supports three run types that control how much data is cleared before processing begins:
+
+| Type | Flag | Description | Data cleared? |
+|---|---|---|---|
+| **Incremental** | *(default)* | Process records added since the last checkpoint | No |
+| **Backfill** | `--run-type backfill` | Fill gaps in a specific date range | Silver and Gold |
+| **Rebuild** | `--run-type rebuild` | Full reload of derived data from available Bronze | Silver and Gold |
+
+### Incremental runs
+
+Incremental is the default. BioETL picks up from the offset stored in the checkpoint and processes only new records:
+
+```bash
+bioetl run --pipeline chembl_activity
+```
+
+### Backfill runs
+
+A backfill clears and rebuilds Silver and Gold for a specific range. It will prompt for confirmation before clearing data:
+
+```bash
+# Interactive confirmation
+bioetl run --pipeline chembl_activity --run-type backfill
+
+# Skip confirmation
+bioetl run --pipeline chembl_activity --run-type backfill --yes
+
+# Preview what would be cleared without running
+bioetl run --pipeline chembl_activity --run-type backfill --dry-run
+```
+
+### Rebuild runs
+
+A rebuild clears Silver and Gold and reconstructs them from all available Bronze files. No API calls are made — Bronze data already on disk is the source of truth:
+
+```bash
+bioetl run --pipeline chembl_activity --run-type rebuild --yes
+```
+
+<Warning>
+  Backfill and rebuild both clear Silver and Gold before writing. Always run with `--dry-run` first to confirm the scope of the operation.
+</Warning>
+
+## Resuming an interrupted run
+
+If a pipeline stopped mid-run, pass `--resume` to continue from the last checkpoint:
+
+```bash
+bioetl run --pipeline chembl_activity --resume
+```
+
+BioETL loads the checkpoint, validates that the current runtime configuration matches the one that produced it, and continues from the saved offset. If the configuration has changed in a way that would make the resume unsafe, the default behavior (`soft_fail`) is to block the resume and ask you to start a fresh run.
+
+You can control how strictly BioETL enforces checkpoint compatibility:
+
+| Policy | Behavior |
+|---|---|
+| `soft_fail` *(default)* | Block resume on incompatible checkpoint, but do not crash the process |
+| `hard_fail` | Exit with an error on incompatible checkpoint |
+| `observe` | Resume only when the canonical execution identity matches; log warnings for non-identity drift |
+
+```bash
+bioetl run --pipeline chembl_activity --resume --checkpoint-compatibility hard_fail
+```
+
+<Note>
+  `--resume` continues the current pipeline run from a checkpoint. It does not prove that the output is identical to what a fresh run would have produced. For strict reproducibility, use `--exact-replay` instead.
+</Note>
+
+## Exact replay with cached Bronze
+
+Exact replay re-runs Silver and Gold processing against Bronze files already on disk, without making any API calls. Two runs over the same immutable Bronze snapshot will produce the same `execution_fingerprint`, DQ outcomes, and output records — only the `run_id` and `manifest_id` differ between occurrences.
+
+```bash
+# Use cached Bronze instead of fetching from the API
+bioetl run --pipeline chembl_activity --use-cached-bronze
+
+# Strict exact replay with explicit parent run ancestry
+bioetl run --pipeline chembl_activity \
+  --use-cached-bronze \
+  --exact-replay \
+  --replay-of-run-id 7f26d7b2-2c25-4aef-bf4c-030e4f8a4f87 \
+  --replay-of-manifest-id manifest-parent-001
+```
+
+<Tip>
+  Filter the Bronze cache by date if you have multiple runs and want to replay a specific day's data:
+
+  ```bash
+  bioetl run --pipeline chembl_activity --use-cached-bronze --cached-bronze-date 2026-01-20
+  ```
+</Tip>
+
+If you run `--exact-replay` without `--use-cached-bronze`, BioETL will warn you that the run is outside the strict exact-replay boundary. Without an immutable Bronze snapshot, bit-identical outputs cannot be guaranteed.
+
+## Run manifests
+
+Every pipeline run creates an immutable run manifest before execution begins. Manifests are stored at:
+
+```text
+data/output/control/run_manifest/{manifest_id}.json
+```
+
+A manifest captures the full provenance of a run: the pipeline name, run type, effective configuration hash, code version, input snapshot IDs, and planned artifacts. Manifests are append-only and are never modified after creation.
+
+The run ledger writes lifecycle events for each manifest as the run progresses:
+
+| Event | When it is written |
+|---|---|
+| `manifest_created` | Before the run begins |
+| `run_started` | When execution starts |
+| `stage_started` | When Bronze, Silver, or Gold processing begins |
+| `stage_completed` | When a stage finishes successfully |
+| `artifact_published` | When a Delta Lake table write completes |
+| `dq_policy_applied` | When a DQ threshold check runs |
+| `run_finished` | When the run completes successfully |
+| `run_failed` | When the run exits with an error |
+| `run_shutdown` | When the process is shutting down |
+
+## Inspecting a run
+
+Use `bioetl run-manifest show` to display the manifest and ledger for any completed run:
+
+```bash
+# Show by run ID or manifest ID
+bioetl run-manifest show 7f26d7b2-2c25-4aef-bf4c-030e4f8a4f87
+
+# Machine-readable output
+bioetl run-manifest show 7f26d7b2-2c25-4aef-bf4c-030e4f8a4f87 --format json
+```
+
+The output is grouped into sections — Manifest, Code Provenance, Execution Inputs, Ledger, and Diagnostics — so you can quickly find what you need during triage.
+
+To compare two runs:
+
+```bash
+bioetl run-manifest diff <run-id-a> <run-id-b>
+```
+
+The diff shows which fields diverged between the two manifests, including configuration, artifact counts, and DQ outcomes.
+
+## Composite pipeline checkpoints
+
+Composite pipelines (such as the publication pipeline) store their checkpoints under a separate path:
+
+```text
+data/output/checkpoints/composite/composite-{name}-{run-id}.json
+```
+
+Resume for composite pipelines uses the checkpoint snapshot as a base and then replays ledger events strictly after `last_event_id`, recovering the coarse-grained lifecycle without fabricating intermediate state:
+
+```bash
+bioetl run-composite --composite publication --resume
+```

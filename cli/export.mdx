@@ -1,0 +1,104 @@
+---
+title: "bioetl export — export pipeline data to CSV or Excel"
+sidebarTitle: "bioetl export"
+description: "Export BioETL Silver or Gold Delta tables to CSV, XLSX, or TSV, with automatically generated provenance, licensing, and checksum manifests."
+---
+
+The `export` command lets you download data from BioETL's Delta Lake tables into analysis-ready files. You can export any Silver or Gold table to CSV, Excel, or TSV format. Every successful export produces not just the data file, but also three sidecar manifest files that document the data's provenance, licensing obligations, and integrity checksums.
+
+## Syntax
+
+```bash
+bioetl export [TABLE] [OPTIONS]
+```
+
+The `TABLE` argument uses the format `provider.entity` — for example, `chembl.activity` or `pubchem.compound`. You can omit `TABLE` when using `--list`.
+
+## Options
+
+<ParamField query="--list" type="flag" default="false">
+  Print all available tables and exit. No TABLE argument is required.
+</ParamField>
+
+<ParamField query="--preview" type="flag" default="false">
+  Show the table schema and a sample of rows without writing any files.
+</ParamField>
+
+<ParamField query="--format, -f" type="choice" default="csv">
+  Output format: `csv`, `xlsx`, or `tsv`.
+</ParamField>
+
+<ParamField query="--layer, -l" type="choice" default="silver">
+  Which data layer to export: `silver` or `gold`.
+</ParamField>
+
+<ParamField query="--output, -o" type="path" default="data/exports">
+  Directory where exported files are written.
+</ParamField>
+
+<ParamField query="--limit" type="integer">
+  Maximum number of rows to export. Omit to export all rows.
+</ParamField>
+
+<ParamField query="--columns, -c" type="string">
+  Comma-separated list of column names to include. Omit to export all columns.
+</ParamField>
+
+## Sidecar manifests
+
+Every successful `export` produces four files in the output directory: the data file itself and three sidecar manifests.
+
+| File | Contents |
+|---|---|
+| `*.provenance-manifest.json` | Dataset bundle ID, BioETL version, source providers, schema fields, row count, and a checksum of the data file |
+| `*.licensing-manifest.json` | Provider attribution and licensing notes, plus a separate record for the MIT license that covers BioETL's code |
+| `*.checksums-manifest.json` | SHA-256 hash and file size for the data file and each sidecar manifest |
+
+<Note>
+The licensing manifest records known provider obligations and attribution requirements. It is not a legal opinion and does not assert that merged outputs are MIT-licensed data.
+</Note>
+
+## Table name format
+
+Tables follow the `provider.entity` naming convention. Examples:
+
+| Table name | Description |
+|---|---|
+| `chembl.activity` | ChEMBL bioactivity records (Silver layer) |
+| `chembl.compound` | ChEMBL compound data |
+| `pubchem.compound` | PubChem compound records |
+| `uniprot.protein` | UniProt protein data |
+
+Use `bioetl export --list` to see every table currently available in your local Delta Lake.
+
+## Examples
+
+```bash
+# List all available tables
+bioetl export --list
+
+# Preview schema and sample rows for a table
+bioetl export chembl.activity --preview
+
+# Export to CSV (default format)
+bioetl export chembl.activity
+
+# Export to Excel
+bioetl export chembl.activity --format xlsx
+
+# Export to TSV
+bioetl export chembl.activity --format tsv
+
+# Limit rows and select specific columns
+bioetl export chembl.activity --limit 10000 --columns id,name,value
+
+# Export the Gold layer instead of Silver
+bioetl export chembl.activity --layer gold
+
+# Write to a custom directory
+bioetl export chembl.activity -o ./my-exports
+```
+
+<Tip>
+Use `--preview` before a large export to confirm the schema and check row counts. This avoids writing multi-gigabyte files when you only need a subset of columns.
+</Tip>

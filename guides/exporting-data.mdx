@@ -1,0 +1,184 @@
+---
+title: "Export BioETL bioactivity data to CSV, XLSX, or TSV"
+sidebarTitle: "Export Data"
+description: "Export Silver or Gold layer tables to CSV, Excel, or TSV, select columns and row limits, and understand the sidecar provenance and checksums files."
+---
+
+After a pipeline run completes, your data lives in Delta Lake tables in the
+Silver and Gold layers. The `bioetl export` command lets you materialise any of
+those tables into a flat file — CSV, Excel, or TSV — ready for downstream
+analysis in Python, R, or a spreadsheet tool. Every export also writes three
+sidecar manifest files that record provenance, licensing obligations, and
+checksums alongside the data file.
+
+## Discover available tables
+
+List every table that has data ready to export:
+
+```bash
+bioetl export --list
+```
+
+Tables are identified by the pattern `provider.entity`, for example
+`chembl.activity` or `pubchem.compound`.
+
+## Preview a table
+
+Before exporting, inspect the table's schema and a sample of rows:
+
+```bash
+bioetl export chembl.activity --preview
+```
+
+This is useful for confirming which columns are present and checking that the
+data looks as expected without writing a full export file.
+
+## Export to a file
+
+<Tabs>
+  <Tab title="CSV (default)">
+    ```bash
+    bioetl export chembl.activity
+    ```
+
+    Output is written to `data/exports/` by default.
+  </Tab>
+  <Tab title="Excel (XLSX)">
+    ```bash
+    bioetl export chembl.activity --format xlsx
+    ```
+  </Tab>
+  <Tab title="TSV">
+    ```bash
+    bioetl export chembl.activity --format tsv
+    ```
+  </Tab>
+</Tabs>
+
+## Choose the data layer
+
+By default, BioETL exports from the **Silver** layer, which retains all
+business and system columns. To export the curated **Gold** layer instead:
+
+```bash
+bioetl export chembl.activity --layer gold
+```
+
+<Note>
+Gold tables apply stricter filters and drop internal columns such as DQ
+annotations. They are typically smaller and cleaner than Silver, but may
+exclude records that Silver retains.
+</Note>
+
+## Limit rows and select columns
+
+For large tables, you can cap the number of rows and restrict which columns are
+included:
+
+```bash
+# Export the first 10,000 rows
+bioetl export chembl.activity --limit 10000
+
+# Export only specific columns
+bioetl export chembl.activity --columns activity_id,standard_type,standard_value,standard_units,pchembl_value
+
+# Combine limits and column selection
+bioetl export chembl.activity --limit 10000 --columns activity_id,standard_value,pchembl_value
+```
+
+## Change the output directory
+
+By default, files are written to `data/exports/`. Use `-o` to write to a
+different location:
+
+```bash
+bioetl export chembl.activity -o ./my-exports
+```
+
+The directory is created if it does not exist.
+
+## What gets created
+
+A successful export produces four files — one data file and three sidecar
+manifest files:
+
+```text
+data/exports/
+├── chembl_activity_silver_20260116T143022.csv
+├── chembl_activity_silver_20260116T143022.provenance-manifest.json
+├── chembl_activity_silver_20260116T143022.licensing-manifest.json
+└── chembl_activity_silver_20260116T143022.checksums-manifest.json
+```
+
+| File | Contents |
+|---|---|
+| `*.provenance-manifest.json` | Dataset bundle ID, BioETL version, source providers, schema field list, row count, and a checksum of the data file |
+| `*.licensing-manifest.json` | Provider attribution notes and known data licensing obligations, separated from the MIT license that covers the BioETL code itself |
+| `*.checksums-manifest.json` | SHA-256 hash and file size for the data file and for each sidecar manifest |
+
+### Provenance manifest
+
+The provenance manifest records everything needed to trace the export back to a
+specific pipeline run:
+
+```json
+{
+  "bundle_id": "chembl-activity-silver-20260116T143022",
+  "bioetl_version": "6.4.0",
+  "exported_at": "2026-01-16T14:30:22Z",
+  "provider": "chembl",
+  "entity": "activity",
+  "layer": "silver",
+  "row_count": 284193,
+  "schema_fields": ["activity_id", "standard_type", "standard_value", "..."],
+  "data_file_checksum": "sha256:a3f2..."
+}
+```
+
+### Licensing manifest
+
+The licensing manifest records what BioETL knows about each provider's data
+licensing terms. This information is extracted from provider metadata and
+configuration — it is not legal advice.
+
+<Warning>
+The licensing manifest captures **known provider obligations** as metadata. It
+does not substitute for legal review. Merged or transformed bioactivity data
+may carry multiple upstream licenses; consult your institution's legal team
+before redistributing exported datasets.
+</Warning>
+
+### Checksums manifest
+
+The checksums manifest lets you verify file integrity after transfer or
+archival:
+
+```json
+{
+  "files": {
+    "chembl_activity_silver_20260116T143022.csv": {
+      "sha256": "a3f2...",
+      "size_bytes": 48291034
+    },
+    "chembl_activity_silver_20260116T143022.provenance-manifest.json": {
+      "sha256": "7b91...",
+      "size_bytes": 1204
+    }
+  }
+}
+```
+
+## Full example
+
+```bash
+# Export Gold-layer ChEMBL activity data, limit 50,000 rows,
+# select key columns, write to a project directory
+bioetl export chembl.activity \
+    --layer gold \
+    --limit 50000 \
+    --columns activity_id,standard_type,standard_value,standard_units,pchembl_value,canonical_smiles \
+    -o ./analysis/data
+```
+
+This produces `./analysis/data/chembl_activity_gold_*.csv` alongside the three
+sidecar files.

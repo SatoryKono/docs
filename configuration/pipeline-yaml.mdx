@@ -1,0 +1,340 @@
+---
+title: "Pipeline YAML configuration: complete field reference"
+sidebarTitle: "Pipeline YAML"
+description: "How BioETL resolves and merges pipeline YAML files, with a full field reference and examples for filters, sinks, and composite pipelines."
+---
+
+BioETL follows a **convention-over-configuration** approach to pipeline YAML. Most paths, table names, and DQ rule references are computed automatically from a pipeline's `provider` and `entity` fields — you only need to specify what differs from the defaults. All pipeline YAML files live under `configs/` and are validated by Pydantic on startup, so configuration errors surface immediately rather than during a run.
+
+---
+
+## Configuration hierarchy
+
+BioETL loads and merges three layers of YAML before running any pipeline. Later layers override earlier ones for scalar values; list fields (such as validation rules) are concatenated and deduplicated.
+
+```text
+configs/base/pipeline.yaml                  ← global defaults
+configs/providers/{provider}.yaml           ← provider-level source, rate limits, circuit breaker
+configs/entities/{provider}/{entity}.yaml   ← entity-specific pipeline, schema, quality, filters
+```
+
+<AccordionGroup>
+  <Accordion title="configs/base/pipeline.yaml — global defaults">
+    Contains the fallback values for batch size, checkpoint interval, concurrency, and other runtime parameters. You rarely need to edit this file directly; use environment variables or entity-level YAML to override specific values.
+  </Accordion>
+  <Accordion title="configs/providers/{provider}.yaml — provider config">
+    Defines the HTTP client settings, pagination strategy, rate limits, circuit breaker thresholds, and the list of entities available for that provider. BioETL ships provider configs for ChEMBL, PubChem, UniProt, PubMed, CrossRef, OpenAlex, and Semantic Scholar.
+  </Accordion>
+  <Accordion title="configs/entities/{provider}/{entity}.yaml — entity config">
+    The primary file you work with when customizing a pipeline. It contains the pipeline runtime parameters, schema column groups, data quality rules, extraction and Silver/Gold filters, merge contracts, and hash policy — all in one unified SSOT file.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  The `dq_config_file` and `filter_config_file` fields in an entity config are computed automatically from `provider` and `entity`. You do not need to set them unless you want to point to a non-standard path.
+</Note>
+
+---
+
+## Entity config structure
+
+The file `configs/entities/chembl/activity.yaml` is a representative example. Here is how each top-level section maps to runtime behavior:
+
+```yaml
+version: 1.0.0
+provider: chembl
+entity: activity
+
+pipeline:
+  pipeline_name: chembl_activity
+  provider: chembl
+  entity_type: activity
+  description: Extract biological activity records from ChEMBL API
+  business_primary_keys:
+    - activity_id
+  batch_size: 1000
+
+  sink:
+    silver:
+      mode: merge
+      idempotency_contract: merge_upsert
+    gold:
+      enabled: true
+```
+
+| Section | Required | Description |
+|---|---|---|
+| `version` | Yes | Unified config schema version. |
+| `provider` | Yes | Provider identifier, lowercase (e.g. `chembl`, `pubmed`). |
+| `entity` | Yes | Entity identifier within the provider (e.g. `activity`, `molecule`). |
+| `pipeline` | Yes | Runtime parameters: name, primary keys, batch size, sink modes. |
+| `schema` | Yes | Column groups and per-layer include/exclude policies for Silver and Gold. |
+| `quality` | Yes | Entity-level DQ validation rules. Merged on top of provider and global rules. |
+| `filters` | Yes | Extraction parameters and Silver/Gold filter rules. |
+| `contracts` | Yes | Primary key, merge key, and content hash policy. |
+
+---
+
+## Convention-based path resolution
+
+When BioETL loads an entity config, it automatically computes the following from `provider` and `entity_type`. You do not need to specify these in YAML:
+
+| Field | Auto-computed value |
+|---|---|
+| Bronze output path | `{BIOETL_DATA_DIR}/output/bronze/{provider}/{entity}` |
+| Silver output path | `{BIOETL_DATA_DIR}/output/silver/{provider}/{entity}` |
+| Gold output path | `{BIOETL_DATA_DIR}/output/gold/{provider}/{entity}` |
+| Silver table name | `{provider}_{entity}` |
+| Gold table name | `{provider}_{entity}` |
+| `sort_by` columns | Derived from `technical_primary_key` + `business_primary_keys` |
+
+Override any of these by setting them explicitly in your entity YAML.
+
+---
+
+## Viewing and validating resolved config
+
+Before running a pipeline, you can inspect the fully resolved configuration — with all hierarchy layers merged — using the CLI.
+
+<Steps>
+  <Step title="Show the resolved config">
+    ```bash
+    bioetl config show chembl_activity
+    ```
+    Prints the merged configuration as it will be used at runtime, including all auto-computed fields.
+  </Step>
+  <Step title="Validate the config">
+    ```bash
+    bioetl config validate chembl_activity
+    ```
+    Runs Pydantic validation on the merged config and reports any errors before you start a run.
+  </Step>
+  <Step title="List all available pipelines">
+    ```bash
+    bioetl config list-pipelines
+    ```
+    Prints every pipeline discovered under `configs/entities/`.
+  </Step>
+</Steps>
+
+---
+
+## Sink configuration
+
+Each pipeline writes to up to three medallion layers. You configure the write behavior in the `pipeline.sink` section.
+
+<Tabs>
+  <Tab title="Silver">
+    ```yaml
+    pipeline:
+      sink:
+        silver:
+          mode: merge           # merge | append | delete
+          idempotency_contract: merge_upsert
+    ```
+
+    | Mode | Behavior |
+    |---|---|
+    | `merge` | Upsert records by primary key. Use for most entity pipelines. |
+    | `append` | Append-only write. No deduplication. |
+    | `delete` | Full overwrite of the Silver table. |
+  </Tab>
+  <Tab title="Gold">
+    ```yaml
+    pipeline:
+      sink:
+        gold:
+          enabled: true
+          mode: overwrite       # overwrite | scd2
+          partition_by:
+            - standard_type
+    ```
+
+    Set `enabled: false` to skip Gold layer writes for an entity. `scd2` mode records Type 2 history rows.
+  </Tab>
+</Tabs>
+
+---
+
+## Filter rules
+
+BioETL supports three levels of filtering. All are configured under the `filters` section of the entity YAML.
+
+### Input filter (CSV allow-list)
+
+To run a pipeline against a specific subset of IDs loaded from a CSV file, enable the input filter:
+
+```yaml
+filters:
+  input_filter:
+    enabled: true
+    source_path: data/input/activity.csv
+    column_name: activity_id
+    filter_field: activity_id
+```
+
+When `enabled: false` (the default), BioETL fetches all records from the provider API using the extraction parameters.
+
+### Extraction parameters
+
+Pass query parameters directly to the provider API:
+
+```yaml
+filters:
+  extraction_params:
+    standard_type__in: IC50,Ki
+    standard_units: nM
+    standard_relation: "="
+    assay_type__in: B,F
+    potential_duplicate: 0
+    pchembl_value__isnull: false
+```
+
+These map to the provider's native API filter syntax and are sent as query parameters.
+
+### Silver and Gold filters
+
+Post-extraction filters applied before writing to each layer:
+
+```yaml
+filters:
+  silver_filters:
+    columns:
+      standard_type:
+        - IC50
+        - Ki
+      assay_type:
+        - B
+        - F
+    ranges:
+      pchembl_value:
+        min: 3
+        max: 10
+      standard_value:
+        min: 0
+        include_min: false
+    required_fields:
+      - activity_id
+      - molecule_id
+      - standard_value
+    exclude_if_present:
+      - data_validity_comment
+
+  gold_filters:
+    columns:
+      standard_type:
+        - IC50
+        - Ki
+    required_fields:
+      - standard_type
+      - standard_value
+      - standard_units
+      - target_id
+```
+
+| Filter key | Description |
+|---|---|
+| `columns` | Allowlist of accepted values per field. Records with other values are excluded. |
+| `ranges` | Numeric bounds per field. Supports `min`, `max`, `include_min`, `include_max`. |
+| `required_fields` | Fields that must be non-null. Records missing any required field are quarantined. |
+| `exclude_if_present` | Records are excluded when any listed field has a non-null value. |
+
+---
+
+## Provider config reference
+
+The file `configs/providers/chembl.yaml` shows the fields available in a provider config:
+
+```yaml
+version: 1.0.0
+provider: chembl
+
+source:
+  provider_config:
+    provider: chembl
+    base_url: https://www.ebi.ac.uk/chembl/api/data
+    auth_type: public
+    client:
+      timeout_sec: 120.0
+      max_retries: 8
+    pagination:
+      page_size: 1000
+      id_batch_size: 20
+      strategy: offset
+      max_url_length: 2000
+
+  circuit_breaker:
+    failure_threshold: 3
+    recovery_timeout: 3000
+
+  rate_limit:
+    requests_per_second: 0.1
+    burst: 1
+
+entities:
+  - activity
+  - assay
+  - molecule
+  - target
+  # ... and more
+```
+
+<Warning>
+  Do not set the deprecated aliases `source.provider_config.batch_size`, `source.provider_config.page_size`, or `source.batch_size` in new configs. Use `source.provider_config.pagination.*` instead.
+</Warning>
+
+---
+
+## Composite pipelines
+
+Composite pipelines join data from multiple providers into a single enriched dataset. Their configs live in `configs/composites/` and follow a different top-level structure than entity configs.
+
+```yaml
+# configs/composites/publication.yaml
+composite:
+  name: composite_publication
+  version: "1.1.0"
+
+  seed:
+    pipeline: chembl_publication   # Primary source of IDs
+
+  enrichers:
+    - pipeline: crossref_publication
+      join_keys: [doi, title]
+      required: false
+    - pipeline: openalex_publication
+      join_keys: [doi, title]
+      required: false
+    - pipeline: pubmed_publication
+      join_keys: [pmid, doi]
+      required: false
+
+  merge:
+    strategy: left_outer
+    conflict_resolution: seed_priority
+    preserve_all_sources: true
+```
+
+The available composite pipelines are:
+
+| Composite | Seed pipeline | Enrichers |
+|---|---|---|
+| `composite_activity` | `chembl_activity` | Additional activity sources |
+| `composite_assay` | `chembl_assay` | Additional assay sources |
+| `composite_molecule` | `chembl_molecule` | `pubchem_compound` |
+| `composite_publication` | `chembl_publication` | CrossRef, OpenAlex, PubMed, Semantic Scholar |
+| `composite_target` | `chembl_target` | UniProt ID mapping, UniProt protein |
+
+Composite pipelines coordinate seed and enricher pipelines through a shared run manifest. Each participant writes to its own Bronze, Silver, and Gold layers; the composite layer handles aggregation at the Silver level.
+
+---
+
+## Workflow DAG configs
+
+Multi-pipeline orchestration is defined in `configs/workflows/`. A workflow config declares a directed acyclic graph of pipeline steps with dependency ordering. Run a workflow with:
+
+```bash
+bioetl workflow run publication_full
+```
+
+See the [CLI workflow reference](/cli/workflow) for the full set of options.

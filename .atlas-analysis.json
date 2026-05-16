@@ -1,0 +1,108 @@
+{
+  "projectType": "data-platform",
+  "projectName": "BioETL",
+  "projectDescription": "A Python ETL framework for acquiring, normalizing, and validating bioactivity datasets from ChEMBL, PubChem, UniProt, and other public sources into a Delta Lake warehouse.",
+  "theme": "luma",
+  "primaryColor": "#94cb04",
+  "lightColor": "#545454",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/medallion-architecture",
+              "concepts/providers",
+              "concepts/data-quality",
+              "concepts/checkpoints-and-resume"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/running-pipelines",
+              "guides/pipeline-configuration",
+              "guides/exporting-data",
+              "guides/observability",
+              "guides/troubleshooting"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment-variables",
+              "configuration/pipeline-yaml",
+              "configuration/data-quality-rules"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "CLI Reference",
+        "groups": [
+          {
+            "group": "Commands",
+            "pages": [
+              "cli/overview",
+              "cli/run",
+              "cli/workflow",
+              "cli/export",
+              "cli/quarantine",
+              "cli/run-manifest",
+              "cli/diagnostics"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Medallion Architecture (Bronze → Silver → Gold) with Delta Lake storage",
+    "Multi-provider support: ChEMBL, PubChem, UniProt, PubMed, CrossRef, OpenAlex, Semantic Scholar",
+    "Built-in circuit breakers, exponential backoff retries, and dead-letter quarantine",
+    "Declarative YAML pipeline configuration with hierarchical data quality rules",
+    "Checkpoint-based resume and exact replay for reproducible pipeline runs",
+    "Immutable run manifests and append-only ledgers for full provenance tracking",
+    "Local-first design — no external services (Redis, Docker, MinIO) required",
+    "Data export to CSV, XLSX, and TSV with provenance and licensing sidecars",
+    "Prometheus metrics and OpenTelemetry tracing for observability",
+    "Composite pipelines for multi-provider enrichment workflows"
+  ],
+  "publicApiSurface": [
+    "bioetl run --pipeline <NAME> [--run-type incremental|backfill|rebuild]",
+    "bioetl workflow run <NAME> [--dry-run] [--resume-last]",
+    "bioetl run-all --source <PROVIDER>",
+    "bioetl run-composite --composite <NAME>",
+    "bioetl export [TABLE] [--format csv|xlsx|tsv] [--layer silver|gold]",
+    "bioetl quarantine inspect --pipeline <NAME>",
+    "bioetl quarantine stats --pipeline <NAME>",
+    "bioetl quarantine replay --pipeline <NAME>",
+    "bioetl run-manifest show <run-id|manifest-id>",
+    "bioetl run-manifest diff <left> <right>",
+    "bioetl run-manifest score <run-id|manifest-id>",
+    "bioetl config list-pipelines",
+    "bioetl config show <PIPELINE>",
+    "bioetl config validate <PIPELINE>",
+    "bioetl config show-settings",
+    "bioetl diagnostics",
+    "bioetl dq validate --entity <PROVIDER.ENTITY>",
+    "bioetl lineage show --entity <PROVIDER.ENTITY> --record-id <ID>",
+    "bioetl debug --pipeline <NAME>",
+    "bioetl.composition.entrypoints.run_pipeline()",
+    "bioetl.composition.entrypoints.create_pipeline_runner()",
+    "bioetl.composition.entrypoints.bootstrap_composite_runner()",
+    "bioetl.composition.entrypoints.load_pipeline_config()",
+    "bioetl.composition.entrypoints.load_composite_config()"
+  ]
+}

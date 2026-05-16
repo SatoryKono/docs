@@ -1,0 +1,205 @@
+---
+title: "Install BioETL on Linux, macOS, or Windows with WSL"
+sidebarTitle: "Installation"
+description: "Install BioETL using Make, uv, or pip. Covers prerequisites, API key setup, Windows + WSL mixed checkouts, and how to verify your installation."
+---
+
+BioETL runs on Python 3.12 or later and works on Linux, macOS, and Windows (via WSL). The recommended path uses `make install`, which handles virtual environment creation and dependency installation in a single command. If you prefer to manage the environment yourself, you can use `uv` directly or fall back to `pip`.
+
+## Prerequisites
+
+Before you install BioETL, make sure you have the following:
+
+| Tool | Version | Notes |
+|------|---------|-------|
+| Python | 3.12+ | [Download](https://www.python.org/downloads/) |
+| uv | Latest | Recommended package manager. [Install](https://docs.astral.sh/uv/getting-started/installation/) |
+| Git | Any | Required to clone the repository |
+| Make | Any | Optional, but simplifies setup. On Windows, install via Chocolatey or use WSL |
+
+<Note>
+  Docker, Redis, and other external services are not required. BioETL uses local file storage and in-memory locking by default.
+</Note>
+
+## Option 1: Make-based setup (recommended)
+
+This is the supported bootstrap path. `make install` detects whether `uv` is available and uses it; otherwise it creates a `.venv` and installs the package in editable mode.
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/SatoryKono/BioactivityDataAcquisition.git
+    cd BioactivityDataAcquisition
+    ```
+  </Step>
+  <Step title="Install dependencies">
+    ```bash
+    make install
+    ```
+
+    This creates a virtual environment and installs BioETL with its `dev` and `tracing` extras.
+  </Step>
+  <Step title="Verify runtime dependencies">
+    ```bash
+    make test-deps
+    ```
+
+    This checks that critical runtime packages (`pandas`, `pandera`, `polars`, and others) are correctly installed before you run the full test suite.
+  </Step>
+  <Step title="Configure pytest and pre-commit plugins">
+    ```bash
+    make setup-plugins
+    ```
+
+    This validates required pytest plugins and installs pre-commit hooks.
+  </Step>
+</Steps>
+
+## Option 2: Manual setup with uv
+
+Use this path when you want to manage the environment yourself without `make`.
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/SatoryKono/BioactivityDataAcquisition.git
+    cd BioactivityDataAcquisition
+    ```
+  </Step>
+  <Step title="Install dependencies with uv">
+    ```bash
+    uv sync --extra dev --extra tracing
+    ```
+
+    If you also need to build or serve the documentation site locally, add the `docs` extra:
+
+    ```bash
+    uv sync --extra dev --extra tracing --extra docs
+    ```
+  </Step>
+  <Step title="Verify the installation">
+    ```bash
+    make test-deps
+    make test
+    ```
+  </Step>
+</Steps>
+
+## Option 3: pip fallback
+
+Use `pip` only when `uv` is unavailable.
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/SatoryKono/BioactivityDataAcquisition.git
+    cd BioactivityDataAcquisition
+    ```
+  </Step>
+  <Step title="Create a virtual environment and install">
+    ```bash
+    python3 -m venv .venv
+    source .venv/bin/activate
+    pip install -e ".[dev,tracing]"
+    ```
+
+    On Windows (PowerShell):
+
+    ```powershell
+    python -m venv .venv
+    .venv\Scripts\Activate.ps1
+    pip install -e ".[dev,tracing,docs]"
+    ```
+  </Step>
+  <Step title="Verify the installation">
+    ```bash
+    make test-deps
+    make test
+    ```
+  </Step>
+</Steps>
+
+## Windows + WSL mixed checkout
+
+If you open the same repository from both Windows PowerShell and WSL, you must keep the virtual environments separate. A Linux `.venv` is not valid in PowerShell, and a Windows `.venv` is not valid in WSL.
+
+Run the OS-specific bootstrap script for each environment:
+
+<CodeGroup>
+
+```powershell PowerShell
+.\scripts\engineering\dev\setup_env_windows.ps1
+```
+
+```bash WSL / Linux
+bash scripts/engineering/dev/setup_env_wsl.sh
+```
+
+</CodeGroup>
+
+This creates two separate environments:
+
+```text
+.venv-win               # Windows PowerShell
+~/.venvs/bioetl         # WSL / Linux (default path)
+```
+
+<Warning>
+  Never activate the `.venv-win` environment in WSL or the WSL environment in PowerShell. Use the OS-specific wrappers for running tests and type checks.
+</Warning>
+
+After bootstrapping, use the matching wrappers to run checks in each environment:
+
+<CodeGroup>
+
+```powershell PowerShell
+.\scripts\engineering\dev\run_pytest.ps1 tests\ --timeout=120 -n 4 --lf
+.\scripts\engineering\dev\run_mypy.ps1
+```
+
+```bash WSL / Linux
+bash scripts/engineering/dev/run_pytest.sh tests/ --timeout=120 -n 4 --lf
+bash scripts/engineering/dev/run_mypy.sh
+```
+
+</CodeGroup>
+
+## Optional: configure API keys
+
+Most providers work without API keys, but some offer higher rate limits or require authentication for production-scale runs. Copy the example environment file and edit it with your keys:
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and add the keys you need:
+
+```ini
+# Core settings (defaults are fine for local development)
+BIOETL_ENV=dev
+BIOETL_DATA_DIR=data
+BIOETL_DEBUG=false
+
+# Provider API keys (all optional unless noted)
+BIOETL_UNIPROT_API_KEY=        # Optional — raises UniProt rate limit to 100 req/sec
+BIOETL_PUBMED_API_KEY=         # NCBI E-utilities key — raises PubMed to 10 req/sec
+BIOETL_PUBMED_EMAIL=           # Your email for NCBI tool identification
+BIOETL_OPENALEX_API_KEY=       # Required for production-scale OpenAlex runs
+BIOETL_SEMANTICSCHOLAR_API_KEY= # Raises Semantic Scholar to 1 req/sec
+BIOETL_CROSSREF_EMAIL=         # Your email for Crossref polite pool access
+```
+
+<Tip>
+  For basic local use and development, you can skip API keys entirely. ChEMBL and PubChem require no authentication, and UniProt works anonymously at a lower rate limit.
+</Tip>
+
+## Verify your installation
+
+Run the dependency check first to confirm all required packages are present, then run the full test suite:
+
+```bash
+make test-deps
+make test
+```
+
+If all tests pass, your environment is ready. You can now follow the [quickstart](/quickstart) to run your first pipeline.

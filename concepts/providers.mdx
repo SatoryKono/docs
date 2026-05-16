@@ -1,0 +1,150 @@
+---
+title: "Supported data providers, entities, and rate limits"
+sidebarTitle: "Providers"
+description: "BioETL connects to eight public bioactivity and literature databases, each with a dedicated pipeline, configurable API key, and built-in rate limiting."
+---
+
+BioETL ships with built-in support for eight public data providers covering bioactivity measurements, compound structures, protein sequences, and scientific literature. Each provider is wrapped in a unified HTTP client that handles rate limiting, retries with exponential backoff, and circuit-breaking automatically — you configure an API key where supported, and BioETL takes care of the rest.
+
+## Supported providers
+
+| Provider | Entity types | Rate limit |
+|---|---|---|
+| **ChEMBL** | Activity, Assay, Molecule, Target, Target Component, Protein Class, Cell Line, Compound Record, Publication, Publication Term/Similarity, Subcellular Fraction, Tissue | 3 req/sec |
+| **PubChem** | Compound | 5 req/sec |
+| **UniProt** | Protein | 10 req/sec (100 req/sec with API key) |
+| **UniProt ID Mapping** | ID Mapping | Local job — no external rate limit |
+| **PubMed** | Publication | 3 req/sec (10 req/sec with API key) |
+| **CrossRef** | Publication | Polite pool |
+| **OpenAlex** | Publication | 10 req/sec with API key |
+| **Semantic Scholar** | Publication | 0.1 req/sec (1 req/sec with API key) |
+
+Rate limits are enforced per-provider by BioETL's unified HTTP client. If a provider returns a 429 response, BioETL backs off automatically and retries.
+
+## Configuring API keys
+
+Providers that support API keys give you higher rate limits or access to additional endpoints. Set keys in your `.env` file or as environment variables:
+
+```bash
+# UniProt: 10x rate limit with an API key
+BIOETL_UNIPROT_API_KEY=your_key_here
+
+# PubMed (NCBI E-utilities): required for sustained access
+BIOETL_PUBMED_API_KEY=your_key_here
+BIOETL_PUBMED_EMAIL=you@example.com
+
+# OpenAlex: required for production-scale runs
+BIOETL_OPENALEX_API_KEY=your_key_here
+BIOETL_OPENALEX_EMAIL=you@example.com   # contact attribution, not a replacement for the key
+
+# Semantic Scholar: 10x rate limit with an API key
+BIOETL_SEMANTICSCHOLAR_API_KEY=your_key_here
+
+# CrossRef: polite pool access (no key required, email recommended)
+BIOETL_CROSSREF_EMAIL=you@example.com
+```
+
+Copy `.env.example` to `.env` to get a pre-filled template with all available variables and comments:
+
+```bash
+cp .env.example .env
+```
+
+<Note>
+  UniProt, ChEMBL, PubChem, and CrossRef are usable without any credentials. For PubMed, Semantic Scholar, and OpenAlex, an API key is strongly recommended for any run beyond a small sample.
+</Note>
+
+## Pipeline naming convention
+
+Each provider-entity combination maps to a named pipeline following the pattern `{provider}_{entity}`. Pass this name to `--pipeline` when running a pipeline:
+
+```bash
+bioetl run --pipeline chembl_activity
+bioetl run --pipeline pubchem_compound
+bioetl run --pipeline uniprot_protein
+```
+
+Some examples across all providers:
+
+| Pipeline name | Provider | Entity |
+|---|---|---|
+| `chembl_activity` | ChEMBL | Activity |
+| `chembl_molecule` | ChEMBL | Molecule |
+| `chembl_target` | ChEMBL | Target |
+| `pubchem_compound` | PubChem | Compound |
+| `uniprot_protein` | UniProt | Protein |
+| `uniprot_idmapping` | UniProt ID Mapping | ID Mapping |
+| `pubmed_publication` | PubMed | Publication |
+| `crossref_publication` | CrossRef | Publication |
+| `openalex_publication` | OpenAlex | Publication |
+| `semanticscholar_publication` | Semantic Scholar | Publication |
+
+## Listing available pipelines
+
+To see every pipeline available in your installation:
+
+```bash
+bioetl config list-pipelines
+```
+
+To inspect the resolved configuration for a specific pipeline:
+
+```bash
+bioetl config show chembl_activity
+bioetl config show chembl_activity --format json
+```
+
+## Composite pipelines
+
+Some entity types are enriched from multiple providers. The **publication** composite pipeline, for example, seeds from one provider and enriches the results through CrossRef, OpenAlex, PubMed, and Semantic Scholar in sequence:
+
+```bash
+# Run the full publication composite pipeline
+bioetl run-composite --composite publication
+
+# Run with a record limit for testing
+bioetl run-composite --composite publication --seed-limit 100
+
+# Run only specific enrichers
+bioetl run-composite --composite publication --enrich-only crossref,openalex
+```
+
+Composite pipelines coordinate multiple underlying pipelines through a single command. Each participant writes to its own Bronze, Silver, and Gold layers, and the composite orchestrator links them through a shared run manifest.
+
+<Tip>
+  To run all pipelines for a single provider at once, use `bioetl run-all --source chembl`. Add `--list-only` to preview which pipelines would run without executing them.
+</Tip>
+
+## Provider details
+
+<AccordionGroup>
+  <Accordion title="ChEMBL">
+    ChEMBL is the primary source for bioactivity measurements in BioETL. It provides 12 entity types covering the full drug discovery data model: activities, assays, molecules, targets, target components, protein classes, cell lines, compound records, publications, publication terms and similarity scores, subcellular fractions, and tissues.
+
+    ChEMBL does not require an API key. The default rate limit is 3 requests per second.
+  </Accordion>
+  <Accordion title="PubChem">
+    PubChem provides compound structure and property data. The `pubchem_compound` pipeline fetches compound records and normalizes them into the Silver schema.
+
+    No API key is required. The default rate limit is 5 requests per second.
+  </Accordion>
+  <Accordion title="UniProt and UniProt ID Mapping">
+    UniProt provides canonical protein sequence and annotation data. The `uniprot_protein` pipeline fetches protein records.
+
+    The `uniprot_idmapping` pipeline runs ID mapping jobs locally — it submits a job to UniProt, polls for completion, and downloads the result. Because mapping runs as a single job rather than a stream of HTTP requests, it has no effective external rate limit.
+
+    Set `BIOETL_UNIPROT_API_KEY` to raise the UniProt rate limit from 10 to 100 requests per second.
+  </Accordion>
+  <Accordion title="PubMed">
+    PubMed provides scientific literature via the NCBI E-utilities API. Set `BIOETL_PUBMED_API_KEY` and `BIOETL_PUBMED_EMAIL` to raise the rate limit from 3 to 10 requests per second. The email is used for NCBI tool identification and is required alongside the API key.
+  </Accordion>
+  <Accordion title="CrossRef">
+    CrossRef provides DOI resolution and publication metadata. Access is through the polite pool, which does not have a strict rate limit but expects a contact email in `BIOETL_CROSSREF_EMAIL` for fair-use identification.
+  </Accordion>
+  <Accordion title="OpenAlex">
+    OpenAlex provides open scholarly graph data. An API key (`BIOETL_OPENALEX_API_KEY`) is required for production-scale runs and raises the effective rate limit. `BIOETL_OPENALEX_EMAIL` is optional contact attribution and does not substitute for the API key.
+  </Accordion>
+  <Accordion title="Semantic Scholar">
+    Semantic Scholar provides AI-enriched publication data. Without an API key the rate limit is 0.1 requests per second — fast enough for small samples but too slow for large runs. Set `BIOETL_SEMANTICSCHOLAR_API_KEY` to raise it to 1 request per second.
+  </Accordion>
+</AccordionGroup>

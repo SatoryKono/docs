@@ -1,0 +1,199 @@
+---
+title: "bioetl quarantine — inspect and replay failed records"
+sidebarTitle: "bioetl quarantine"
+description: "Inspect, replay, and manage quarantined records from BioETL pipelines: view failure details, aggregate stats, and re-queue records for reprocessing."
+---
+
+When a pipeline record fails data quality checks or encounters a processing error, BioETL places it in quarantine rather than dropping it silently. The `quarantine` command group lets you inspect those records, understand why they failed, and — when appropriate — re-queue them for reprocessing.
+
+## Subcommands
+
+```bash
+bioetl quarantine inspect --pipeline <NAME> [OPTIONS]
+bioetl quarantine stats   --pipeline <NAME> [OPTIONS]
+bioetl quarantine replay  --pipeline <NAME> [OPTIONS]
+```
+
+---
+
+## quarantine inspect
+
+Shows individual quarantined records for a pipeline. By default returns the 100 most recent records.
+
+**Syntax:**
+
+```bash
+bioetl quarantine inspect --pipeline <NAME> [OPTIONS]
+```
+
+<ParamField query="--pipeline" type="string" required>
+  The pipeline name to inspect, for example `chembl_activity`.
+</ParamField>
+
+<ParamField query="--limit" type="integer" default="100">
+  Maximum number of records to return.
+</ParamField>
+
+<ParamField query="--error-code" type="string">
+  Filter records to a specific error code, for example `DQ-MISSING-FIELD`.
+</ParamField>
+
+<ParamField query="--run-id" type="string">
+  Restrict the view to records from a single pipeline run.
+</ParamField>
+
+<ParamField query="--silver-filter-only" type="flag" default="false">
+  Shortcut for `--error-code FILTERED_OUT_SILVER`. Shows only records filtered out at the Silver layer.
+</ParamField>
+
+```bash
+# Inspect all quarantined records for a pipeline
+bioetl quarantine inspect --pipeline chembl_activity
+
+# Filter by error code
+bioetl quarantine inspect --pipeline chembl_activity --error-code DQ-MISSING-FIELD
+
+# Show only Silver-filtered records
+bioetl quarantine inspect --pipeline chembl_activity --silver-filter-only
+
+# Limit to records from one specific run
+bioetl quarantine inspect --pipeline chembl_activity --run-id <RUN_ID>
+```
+
+---
+
+## quarantine stats
+
+Shows aggregate statistics for quarantined records: total count, breakdown by error code, and status distribution.
+
+**Syntax:**
+
+```bash
+bioetl quarantine stats --pipeline <NAME> [OPTIONS]
+```
+
+<ParamField query="--pipeline" type="string" required>
+  The pipeline name to aggregate statistics for.
+</ParamField>
+
+<ParamField query="--json" type="flag" default="false">
+  Output statistics as JSON instead of human-readable text.
+</ParamField>
+
+<ParamField query="--error-code" type="string">
+  Restrict statistics to a single error code.
+</ParamField>
+
+<ParamField query="--run-id" type="string">
+  Restrict statistics to a single run.
+</ParamField>
+
+<ParamField query="--silver-filter-only" type="flag" default="false">
+  Shortcut for `--error-code FILTERED_OUT_SILVER`.
+</ParamField>
+
+<ParamField query="--group-by" type="string">
+  Focal Silver grouping for statistics breakdown. Accepted values: `reason-code`, `field`, `rule-type`, `operator`, `reason-code-field`, `reason-signature`.
+</ParamField>
+
+<ParamField query="--top" type="integer" default="10">
+  Maximum number of items to show per grouping.
+</ParamField>
+
+```bash
+# Summary statistics for all quarantined records
+bioetl quarantine stats --pipeline chembl_activity
+
+# Group by DQ failure reason code
+bioetl quarantine stats --pipeline chembl_activity --group-by reason-code
+
+# Group by field with top 20 items
+bioetl quarantine stats --pipeline chembl_activity --group-by field --top 20
+
+# Machine-readable JSON output
+bioetl quarantine stats --pipeline chembl_activity --json
+```
+
+---
+
+## quarantine replay
+
+Marks quarantined records as ready for reprocessing. In non-dry-run mode, matching records are marked as `REPROCESSED`. This command prepares the records — it does not launch a full pipeline rerun by itself.
+
+**Syntax:**
+
+```bash
+bioetl quarantine replay --pipeline <NAME> [OPTIONS]
+```
+
+<ParamField query="--pipeline" type="string" required>
+  The pipeline name whose quarantined records to replay.
+</ParamField>
+
+<ParamField query="--error-code" type="string">
+  Filter records to replay by error code.
+</ParamField>
+
+<ParamField query="--max-age-days" type="integer" default="7">
+  Only replay records younger than this many days.
+</ParamField>
+
+<ParamField query="--dry-run" type="flag" default="false">
+  Preview which records would be marked for replay without making any changes.
+</ParamField>
+
+```bash
+# Preview which records would be replayed
+bioetl quarantine replay --pipeline chembl_activity --dry-run
+
+# Replay records with a specific error code
+bioetl quarantine replay --pipeline chembl_activity --error-code DQ-MISSING-FIELD
+
+# Replay records up to 30 days old
+bioetl quarantine replay --pipeline chembl_activity --max-age-days 30
+```
+
+<Warning>
+After running `quarantine replay`, you still need to run `bioetl run --pipeline <NAME>` to actually reprocess the marked records through the pipeline.
+</Warning>
+
+---
+
+## Record statuses
+
+| Status | Meaning |
+|---|---|
+| `NEW` | Record is quarantined and has not been reviewed |
+| `IGNORED` | Record has been acknowledged and will not be reprocessed |
+| `REPROCESSED` | Record has been marked for replay and submitted for reprocessing |
+
+You can manually set a record's status using `quarantine resolve`:
+
+```bash
+bioetl quarantine resolve \
+    --pipeline chembl_activity \
+    --payload-hash <HASH> \
+    --status IGNORED
+```
+
+Accepted `--status` values are `IGNORED` and `REPROCESSED`.
+
+---
+
+## Error code filtering
+
+Error codes identify the category of failure that caused a record to be quarantined. Common patterns include:
+
+- `DQ-MISSING-FIELD` — a required field was absent
+- `DQ-TYPE-MISMATCH` — a field value did not match the expected type
+- `FILTERED_OUT_SILVER` — the record was filtered at the Silver normalization stage
+
+Use `--error-code` on any subcommand to narrow your view to records of a single failure type, or use `--silver-filter-only` as a shortcut for `FILTERED_OUT_SILVER`.
+
+```bash
+# Count only Silver-filtered records
+bioetl quarantine stats --pipeline chembl_activity --silver-filter-only
+
+# Inspect records with a specific DQ code
+bioetl quarantine inspect --pipeline chembl_activity --error-code DQ-TYPE-MISMATCH
+```

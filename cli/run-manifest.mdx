@@ -1,0 +1,190 @@
+---
+title: "bioetl run-manifest — inspect run provenance data"
+sidebarTitle: "bioetl run-manifest"
+description: "View, score, and diff immutable run manifests and append-only ledger history for BioETL pipeline runs using run-id or manifest-id."
+---
+
+Every BioETL pipeline run produces an immutable run manifest that records what executed, what configuration was active, and what artifacts were produced. The `run-manifest` command lets you inspect that manifest, view the append-only event ledger attached to it, compute a reproducibility audit score, and diff two runs side by side.
+
+## Subcommands
+
+```bash
+bioetl run-manifest show  <run-id|manifest-id> [OPTIONS]
+bioetl run-manifest score <run-id|manifest-id> [OPTIONS]
+bioetl run-manifest diff  <left> <right> [OPTIONS]
+```
+
+---
+
+## Storage layout
+
+Run manifests and ledgers are stored in the following canonical paths under your data directory:
+
+```text
+data/output/control/run_manifest/{manifest_id}.json
+data/output/control/run_manifest/_by_run_id/{run_id}.txt
+data/output/control/run_ledger/{manifest_id}.jsonl
+data/output/control/run_ledger/_by_run_id/{run_id}.txt
+```
+
+You can look up a manifest using either its `manifest_id` or the `run_id` of the pipeline execution. The `show` and `score` commands perform the `run_id → manifest_id` lookup automatically when you pass a UUID-like identifier.
+
+<Note>
+`run_manifest_enabled=true` is required in your control-plane settings for manifests to be written. If a run completed without a manifest, that indicates a runtime contract violation, not a degraded mode.
+</Note>
+
+---
+
+## run-manifest show
+
+Displays the manifest, associated ledger entries, and diagnostics for a single run.
+
+**Syntax:**
+
+```bash
+bioetl run-manifest show <run-id|manifest-id> [--format text|json|yaml]
+```
+
+The command:
+1. Attempts to resolve the identifier as a `manifest_id` directly.
+2. Falls back to a `run_id → manifest_id` lookup for UUID-like identifiers.
+3. Renders the manifest, ledger history (if the ledger is enabled), and diagnostics.
+
+The text renderer groups output into sections — **Manifest**, **Code Provenance**, **Execution Inputs**, **Ledger**, and **Diagnostics** — so you can triage without reading raw JSON.
+
+When diagnostics show a rejected or degraded resume path, the output additionally includes compact forensic blocks with resume-critical anchors:
+
+- `current_identity` and `checkpoint_identity`, containing `composite_run_identity`, `execution_fingerprint`, `manifest_id`, `effective_config_hash`, `contract_ref`, `contract_version`, `exact_replay`, `input_snapshot_ids`, and `input_snapshot_content_hashes`.
+
+A `replay_relationship` field indicates whether one manifest is an exact replay of another, separate from `occurrence_only` or `semantic_drift` relationships.
+
+| Option | Values | Default | Description |
+|---|---|---|---|
+| `--format` | `text`, `json`, `yaml` | `text` | Output format. Use `json` or `yaml` for machine-readable output. |
+
+```bash
+# Show manifest in human-readable text
+bioetl run-manifest show 7f26d7b2-2c25-4aef-bf4c-030e4f8a4f87
+
+# Show as YAML
+bioetl run-manifest show 8d166b4d-c4a8-4755-896e-cf9158c5b5ec --format yaml
+
+# Show as JSON for scripting
+bioetl run-manifest show 7f26d7b2-2c25-4aef-bf4c-030e4f8a4f87 --format json
+```
+
+---
+
+## run-manifest score
+
+Outputs the reproducibility audit score block for a single run.
+
+**Syntax:**
+
+```bash
+bioetl run-manifest score <run-id|manifest-id> [--format json|yaml|text]
+```
+
+The score payload contains:
+
+| Field | Description |
+|---|---|
+| `schema_version` | Score schema version |
+| `contract_version` | Control-plane contract version for this run |
+| `overall_score` | Aggregate reproducibility score |
+| `category_scores` | Per-category breakdown |
+| `blockers` | Issues that prevent exact replay |
+| `evidence_refs` | References to supporting evidence artifacts |
+| `scored_at` | Timestamp the score was computed |
+| `source` | Which system produced the score |
+
+```bash
+bioetl run-manifest score 7f26d7b2-2c25-4aef-bf4c-030e4f8a4f87
+bioetl run-manifest score 7f26d7b2-2c25-4aef-bf4c-030e4f8a4f87 --format json
+```
+
+---
+
+## run-manifest diff
+
+Compares two run manifests field by field, using canonical JSON value comparison across all top-level manifest fields.
+
+**Syntax:**
+
+```bash
+bioetl run-manifest diff <left> <right> [--format text|json|yaml]
+```
+
+Fields that most commonly differ between runs:
+
+- `pipeline_name`, `run_type`
+- `runtime_config`, `resolved_config`
+- `code_provenance`
+- `source_refs`, `planned_artifacts`
+- `run_id`, `manifest_id`
+
+The diff output also includes `artifact_byte_equivalence` — a separate verdict from `semantic_execution_equivalence`. A run can be semantically equivalent to a prior run even if sidecar files or occurrence-scoped artifacts differ byte for byte.
+
+| Option | Values | Default | Description |
+|---|---|---|---|
+| `--format` | `text`, `json`, `yaml` | `text` | Output format. Use `json` or `yaml` for automated processing. |
+
+```bash
+# Diff two runs in text format
+bioetl run-manifest diff \
+    7f26d7b2-2c25-4aef-bf4c-030e4f8a4f87 \
+    17f6799e-6c1a-4dd6-a7a1-b1fe2ea3e9ae
+
+# Diff two manifests as YAML
+bioetl run-manifest diff \
+    8d166b4d-c4a8-4755-896e-cf9158c5b5ec \
+    d775f516-ff3e-4d66-a369-1417c3ff093f \
+    --format yaml
+```
+
+---
+
+## Ledger events
+
+When `run_ledger_enabled=true`, the ledger attached to each manifest records the following events in append-only order:
+
+<AccordionGroup>
+  <Accordion title="Lifecycle events">
+    | Event | When it fires |
+    |---|---|
+    | `manifest_created` | Before the run starts; the manifest is written |
+    | `run_started` | Execution begins |
+    | `run_finished` | Run completed successfully |
+    | `run_failed` | Run terminated with an error |
+    | `run_shutdown` | Process shutdown signal received |
+  </Accordion>
+  <Accordion title="Stage events">
+    | Event | When it fires |
+    |---|---|
+    | `stage_started` | A pipeline stage (Bronze, Silver, Gold) begins |
+    | `stage_completed` | A pipeline stage completes |
+    | `artifact_published` | An output artifact is written to storage |
+    | `dq_policy_applied` | A data quality policy decision is recorded |
+  </Accordion>
+  <Accordion title="Composite pipeline events">
+    | Event | When it fires |
+    |---|---|
+    | `composite_dependency_completed` | A dependency pipeline step in a composite run finishes |
+    | `composite_enricher_completed` | An enricher pipeline step in a composite run finishes |
+    | `composite_merge_completed` | The composite merge step completes |
+    | `input_snapshot_published` | An input snapshot is written for replay support |
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Control-plane settings
+
+The `run-manifest` inspection surface is governed by rollout flags on the `settings.pipeline.control_plane` object:
+
+| Setting | Effect |
+|---|---|
+| `run_manifest_enabled` | Must be `true` for manifests to be written and inspected |
+| `run_ledger_enabled` | Must be `true` (and requires `run_manifest_enabled=true`) for ledger history to be available |
+| `required_persistence_profile` | `replay_ready` requires `run_manifest_enabled=true`; `forensic_grade` additionally requires `run_ledger_enabled=true` |
+| `checkpoint_compatibility_policy` | Controls resume behavior on checkpoint identity mismatch: `observe`, `soft_fail`, or `hard_fail` |

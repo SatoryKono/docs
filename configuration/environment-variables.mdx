@@ -1,0 +1,140 @@
+---
+title: "BioETL environment variables: full config reference"
+sidebarTitle: "Env Variables"
+description: "Complete reference for every environment variable BioETL reads, organized by category, with defaults, valid values, and setup instructions."
+---
+
+BioETL reads configuration from environment variables, making it easy to customize behavior without changing code. All variables are optional — sensible defaults let you run a full pipeline out of the box. For persistent local configuration, copy the `.env.example` file to `.env` and edit it; BioETL loads `.env` automatically at startup.
+
+```bash
+cp .env.example .env
+# Open .env in your editor and set values for your environment
+```
+
+<Note>
+  Variables set in your shell environment always take precedence over values in `.env`. Use your shell for secrets that should not be written to disk.
+</Note>
+
+---
+
+## Core
+
+These variables control the fundamental runtime behavior of BioETL.
+
+| Variable | Default | Description |
+|---|---|---|
+| `BIOETL_ENV` | `dev` | Runtime environment. Set to `staging` or `prod` to enable production-appropriate defaults. |
+| `BIOETL_DATA_DIR` | `data` | Base directory for the Bronze, Silver, and Gold medallion layers. All layer paths are resolved relative to this directory. |
+| `BIOETL_DEBUG` | `false` | Enables debug features such as verbose stack traces and internal state logging. |
+| `BIOETL_TEST_MODE` | `false` | When `true`, substitutes API fixtures for real provider calls. Useful for offline development and CI. |
+
+---
+
+## Pipeline
+
+These variables tune the runtime behavior of batch writes, checkpointing, and concurrency.
+
+| Variable | Default | Valid range | Description |
+|---|---|---|---|
+| `BIOETL_PIPELINE__BATCH_SIZE` | `100` | 1–10000 | Number of records written per batch. |
+| `BIOETL_PIPELINE__CHECKPOINT_INTERVAL` | `1000` | ≥100 | How often (in records) BioETL saves a resume checkpoint. |
+| `BIOETL_PIPELINE__MAX_CONCURRENT_BATCHES` | `4` | 1–16 | Maximum number of batch writes that can run in parallel. |
+| `BIOETL_PIPELINE__HEARTBEAT_INTERVAL` | `30` | 5–60 | Interval in seconds between lock heartbeat renewals. |
+
+<Tip>
+  For low-memory machines, lower `BIOETL_PIPELINE__BATCH_SIZE` and `BIOETL_PIPELINE__MAX_CONCURRENT_BATCHES`. For high-throughput production runs, raise them within the stated limits.
+</Tip>
+
+---
+
+## Provider API keys
+
+BioETL works without API keys for most providers — public rate limits apply. Supplying a key unlocks higher rate limits and removes the need for mandatory email identification on some APIs.
+
+| Variable | Required | Description |
+|---|---|---|
+| `BIOETL_UNIPROT_API_KEY` | No | Optional UniProt API key. Provides higher rate limits for UniProt queries. |
+| `BIOETL_PUBMED_API_KEY` | Recommended | NCBI E-utilities API key. Increases the per-second request limit from 3 to 10. |
+| `BIOETL_PUBMED_EMAIL` | Recommended | Your email address, passed to NCBI for identification. Required by NCBI's usage policy for automated access. |
+| `BIOETL_OPENALEX_API_KEY` | No | OpenAlex API key. Required for sustained production-volume queries. |
+| `BIOETL_OPENALEX_EMAIL` | No | Optional contact email sent in OpenAlex requests, which places you in the polite pool for better performance. |
+| `BIOETL_SEMANTICSCHOLAR_API_KEY` | No | Semantic Scholar API key. Increases rate limits significantly above the unauthenticated default. |
+| `BIOETL_CROSSREF_EMAIL` | Recommended | Your email address for Crossref's polite pool. Unlocks higher, more stable rate limits. |
+
+<Warning>
+  Never commit your `.env` file to version control when it contains API keys. Add `.env` to your `.gitignore` and pass secrets through your CI system's secret management instead.
+</Warning>
+
+---
+
+## Observability
+
+These variables control logging, metrics, and distributed tracing.
+
+| Variable | Default | Description |
+|---|---|---|
+| `BIOETL_LOG_LEVEL` | `INFO` | Minimum log level to emit. One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
+| `BIOETL_LOG_FORMAT` | `json` | Log output format. `json` for structured log ingestion (recommended in production); `text` for human-readable terminal output. |
+| `BIOETL_LOG_FILE` | `reports/logs/bioetl.log` | Path to the log file. The directory is created automatically if it does not exist. |
+| `BIOETL_METRICS_ENABLED` | `true` | Enables the Prometheus metrics endpoint. Set to `false` to disable the metrics server entirely. |
+| `BIOETL_METRICS_PORT` | `8000` | Port on which the Prometheus metrics endpoint listens. |
+| `BIOETL_OBSERVABILITY__TRACING_ENABLED` | `false` | Enables OpenTelemetry tracing. Requires a configured OTLP exporter. |
+| `BIOETL_OBSERVABILITY__DQ_MONITOR_ENABLED` | `false` | Enables the data quality monitoring service, which exposes per-pipeline DQ metrics. |
+
+<Tip>
+  In local development, set `BIOETL_LOG_FORMAT=text` for readable output and leave `BIOETL_LOG_LEVEL=INFO`. In production, keep `json` format so log aggregators can parse structured fields.
+</Tip>
+
+---
+
+## Data quality
+
+These variables set the global error rate thresholds that determine when BioETL warns or fails a batch.
+
+| Variable | Default | Valid range | Description |
+|---|---|---|---|
+| `BIOETL_DQ_SOFT_THRESHOLD` | `0.05` | 0–1 | Error rate that triggers a warning and is logged, but does not stop the pipeline. At the default of `0.05`, more than 5% invalid records in a batch produces a warning. |
+| `BIOETL_DQ_HARD_THRESHOLD` | `0.20` | 0–1 | Error rate that fails the batch and quarantines all records in it. Must be strictly greater than `BIOETL_DQ_SOFT_THRESHOLD`. |
+
+<Warning>
+  `BIOETL_DQ_SOFT_THRESHOLD` must always be less than `BIOETL_DQ_HARD_THRESHOLD`. BioETL will refuse to start if this invariant is violated.
+</Warning>
+
+These values can also be overridden per-entity or per-provider in YAML configuration. See [Configure data quality rules](/configuration/data-quality-rules) for details.
+
+---
+
+## Resilience
+
+These variables configure the circuit breaker and retry behavior for provider API calls.
+
+| Variable | Default | Description |
+|---|---|---|
+| `BIOETL_CB_FAILURE_THRESHOLD` | `5` | Number of consecutive errors before the circuit breaker opens and blocks further requests to that provider. |
+| `BIOETL_CB_RECOVERY_TIMEOUT` | `300` | Seconds to wait before the circuit breaker moves to half-open state and allows a probe request. |
+| `BIOETL_RETRY_MAX_ATTEMPTS` | `3` | Maximum number of retry attempts for a failed API request before the error is propagated. |
+| `BIOETL_RETRY_MULTIPLIER` | `2.0` | Exponential backoff multiplier between retries. A value of `2.0` doubles the wait time after each attempt. |
+
+Provider-specific circuit breaker values in `configs/providers/{provider}.yaml` override these environment-level defaults. See [Pipeline YAML configuration reference](/configuration/pipeline-yaml) for details.
+
+---
+
+## Delta Lake
+
+These variables control how BioETL manages Delta Lake table history.
+
+| Variable | Default | Description |
+|---|---|---|
+| `BIOETL_DELTA_VACUUM_RETENTION` | `7` | Minimum age in days for Delta Lake files that `VACUUM` is allowed to delete. Lowering this reduces disk usage but limits time-travel queries. |
+| `BIOETL_DELTA_FORENSIC_RETENTION` | `7` | Days to retain Delta Lake history for forensic inspection (e.g., `DESCRIBE HISTORY`). |
+
+---
+
+## Quarantine
+
+These variables control how BioETL handles records that fail data quality checks.
+
+| Variable | Default | Description |
+|---|---|---|
+| `BIOETL_QUARANTINE_RETENTION_DAYS` | `30` | Number of days to retain quarantined records before automatic deletion. |
+| `BIOETL_QUARANTINE_PAYLOAD_MAX_SIZE` | `65536` | Maximum size in bytes of the raw payload stored alongside each quarantined record. Payloads larger than this limit are truncated. |

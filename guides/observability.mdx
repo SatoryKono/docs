@@ -1,0 +1,251 @@
+---
+title: "Monitor BioETL with metrics, logs, and OTel tracing"
+sidebarTitle: "Observability"
+description: "Configure Prometheus metrics, structured JSON logs, OpenTelemetry tracing, and the health server. Use bioetl diagnostics for a unified system report."
+---
+
+BioETL emits Prometheus metrics, structured JSON logs, and optional
+OpenTelemetry traces during every pipeline run. A built-in HTTP health server
+exposes liveness and readiness probes while a run is in progress. The
+`bioetl diagnostics` command combines all of these signals into a single
+operator report. This page explains how to configure each observability
+component and how to use diagnostics effectively.
+
+## Prometheus metrics
+
+BioETL starts a Prometheus-compatible HTTP server automatically whenever you
+run a pipeline. Metrics are exposed on port 8000 by default:
+
+```bash
+# While a pipeline is running, scrape metrics in another terminal
+curl http://localhost:8000/metrics | grep bioetl_
+```
+
+### Configuration
+
+| Environment variable | Default | Description |
+|---|---|---|
+| `BIOETL_METRICS_ENABLED` | `true` | Enable or disable metric collection |
+| `BIOETL_METRICS_PORT` | `8000` | Port for the Prometheus metrics endpoint |
+
+```bash
+# Disable metrics
+export BIOETL_METRICS_ENABLED=false
+
+# Change the port
+export BIOETL_METRICS_PORT=9090
+```
+
+### Key metric families
+
+<AccordionGroup>
+  <Accordion title="Pipeline and throughput metrics">
+    | Metric | Type | Description |
+    |---|---|---|
+    | `bioetl_pipeline_duration_seconds` | Histogram | End-to-end pipeline run duration |
+    | `bioetl_records_processed_total` | Counter | Records processed, by stage and run type |
+    | `bioetl_pipeline_runs_total` | Counter | Total runs, by outcome |
+    | `bioetl_batch_size_records` | Histogram | Records per API batch |
+    | `bioetl_errors_total` | Counter | Errors by pipeline, stage, and error code |
+  </Accordion>
+  <Accordion title="Data quality metrics">
+    | Metric | Type | Description |
+    |---|---|---|
+    | `bioetl_dq_records_quarantined_total` | Counter | Records sent to quarantine |
+    | `bioetl_dq_validation_score` | Gauge | Validation pass rate (0.0–1.0) |
+    | `bioetl_dq_validation_failures_total` | Counter | DQ threshold violations |
+    | `bioetl_data_freshness_seconds` | Gauge | Unix timestamp of last successful ingestion |
+  </Accordion>
+  <Accordion title="Circuit breaker metrics">
+    | Metric | Type | Description |
+    |---|---|---|
+    | `bioetl_circuit_breaker_state` | Gauge | 0 = closed, 1 = half-open, 2 = open |
+    | `bioetl_circuit_breaker_trips_total` | Counter | Number of circuit breaker trips |
+    | `bioetl_circuit_breaker_failure_total` | Counter | Failed upstream calls |
+  </Accordion>
+  <Accordion title="Adapter and HTTP metrics">
+    | Metric | Type | Description |
+    |---|---|---|
+    | `bioetl_adapter_request_duration_seconds` | Histogram | API call duration by provider |
+    | `bioetl_http_retries_total` | Counter | HTTP retry attempts |
+    | `bioetl_data_source_retry_exhausted_total` | Counter | Retry budget exhausted |
+    | `bioetl_rate_limiter_wait_seconds` | Histogram | Time waiting for rate limiter tokens |
+  </Accordion>
+</AccordionGroup>
+
+### Example PromQL queries
+
+```promql
+# Record processing rate over 5 minutes
+rate(bioetl_records_processed_total{pipeline="chembl_activity"}[5m])
+
+# 95th-percentile pipeline duration
+histogram_quantile(
+  0.95,
+  sum by (le, pipeline) (
+    rate(bioetl_pipeline_duration_seconds_bucket[5m])
+  )
+)
+
+# Quarantine rate as a percentage of processed records
+sum by (pipeline) (rate(bioetl_dq_records_quarantined_total[5m])) /
+clamp_min(sum by (pipeline) (rate(bioetl_records_processed_total[5m])), 1) * 100
+```
+
+## Structured logging
+
+BioETL writes structured logs in JSON format by default. Every log entry
+includes correlation fields that link it to a specific pipeline run:
+
+```json
+{
+  "timestamp": "2026-01-26T10:30:45.123456Z",
+  "level": "INFO",
+  "run_id": "550e8400-e29b-41d4-a716-446655440000",
+  "pipeline": "chembl_activity",
+  "stage": "preflight",
+  "event": "Fetching records",
+  "offset": 0,
+  "limit": 100,
+  "batch_size": 100
+}
+```
+
+### Log configuration
+
+| Environment variable | Default | Options | Description |
+|---|---|---|---|
+| `BIOETL_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Minimum log level |
+| `BIOETL_LOG_FORMAT` | `json` | `json`, `text` | Log output format |
+| `BIOETL_LOG_FILE` | `reports/logs/bioetl.log` | Any file path | Log file location |
+
+```bash
+# Enable debug logging via environment variable
+export BIOETL_LOG_LEVEL=DEBUG
+bioetl run --pipeline chembl_activity
+
+# Or use the CLI flag for a single run
+bioetl run --pipeline chembl_activity --debug
+```
+
+<Tip>
+Use `text` format during interactive development and `json` in CI and
+production. JSON logs are easier to ingest into log aggregation tools.
+</Tip>
+
+## OpenTelemetry tracing
+
+Distributed tracing is disabled by default. Enable it to get per-batch span
+traces that show time spent in each pipeline stage:
+
+```bash
+export BIOETL_OBSERVABILITY__TRACING_ENABLED=true
+bioetl run --pipeline chembl_activity
+```
+
+For workflow runs, pass `--tracing` explicitly so each step's spans are
+emitted:
+
+```bash
+bioetl workflow run chembl_activity --tracing --limit 1000
+```
+
+BioETL uses an OTLP exporter. Point it at your tracing backend:
+
+```bash
+# Send traces to a local Tempo instance
+export OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+```
+
+The span hierarchy mirrors the pipeline execution model:
+
+```text
+pipeline-execution
+├── batch-0
+│   ├── fetch-records
+│   ├── transform
+│   ├── write-bronze
+│   ├── write-silver
+│   └── write-gold
+└── finalize
+    ├── vacuum
+    └── checkpoint
+```
+
+## Health server
+
+BioETL starts an HTTP health server on port 8081 whenever a pipeline is
+running. Use this for liveness and readiness checks:
+
+| Endpoint | Description |
+|---|---|
+| `GET /health` | Overall health status |
+| `GET /health/live` | Liveness probe |
+| `GET /health/ready` | Readiness probe |
+| `GET /health/providers` | Per-provider health status |
+
+```bash
+# Use a custom port
+bioetl run --pipeline chembl_activity --health-port 9090
+
+# Disable the health server
+bioetl run --pipeline chembl_activity --no-health-server
+```
+
+To run a standalone health server independently of any pipeline:
+
+```bash
+bioetl health server --host 0.0.0.0 --port 8081
+```
+
+Check provider connectivity from the CLI:
+
+```bash
+# Check all providers
+bioetl health check
+
+# Check a specific provider
+bioetl health check --provider chembl
+
+# JSON output for scripting
+bioetl health check --json
+```
+
+## System diagnostics
+
+The `bioetl diagnostics` command produces a unified report that combines
+metrics, health checks, checkpoints, run manifests, and quarantine statistics:
+
+```bash
+# Full report (all sections enabled by default)
+bioetl diagnostics
+
+# Filter to the last 24 hours
+bioetl diagnostics --since 24h
+
+# Focus on a single pipeline
+bioetl diagnostics --pipeline chembl_activity
+
+# Save a machine-readable JSON report
+bioetl diagnostics --json --output report.json
+```
+
+<Tip>
+Run `bioetl diagnostics --json --output report.json` as the first step in any
+incident investigation. The output captures the system state at a point in time
+and can be shared with your team or attached to a bug report.
+</Tip>
+
+The diagnostics report includes:
+
+- **Metrics**: current Prometheus endpoint status and admin profile
+- **Health**: provider connectivity and readiness
+- **Checkpoints**: last checkpoint for each pipeline and compatibility status
+- **Manifests**: recent run manifests and ledger summary
+- **Quarantine**: per-pipeline quarantine statistics
+
+You can also access each section independently:
+
+```bash
+bioetl diagnostics --checkpoints=false --manifests=false --quarantine=false
+```

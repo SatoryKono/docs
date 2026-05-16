@@ -1,0 +1,66 @@
+---
+title: "BioETL CLI reference: commands, options, exit codes"
+sidebarTitle: "Overview"
+description: "How to invoke the BioETL CLI, get help for any command, and a full index of all commands with one-line descriptions and exit code reference."
+---
+
+The BioETL CLI is your primary interface for running pipelines, inspecting data quality, and managing the control plane. Every operation — from fetching ChEMBL activity records to replaying a past run with exact-input reproducibility — is available as a subcommand you can call from your terminal.
+
+## Invoking the CLI
+
+After installation, you can invoke BioETL in two ways:
+
+```bash
+# Recommended after installation
+bioetl <command> [options]
+
+# During development with uv, or inside an activated virtualenv
+python -m bioetl <command> [options]
+```
+
+## Getting help
+
+Append `--help` to any command or subcommand to see its options and a short description:
+
+```bash
+bioetl --help
+bioetl run --help
+bioetl workflow run --help
+```
+
+## Command index
+
+| Command | Description |
+|---|---|
+| `run` | Run a single pipeline for one entity |
+| `run-all` | Run all pipelines for a given provider sequentially |
+| `run-composite` | Run a composite (seed + enrichers) multi-provider pipeline |
+| `workflow` | Execute a declarative workflow DAG defined in YAML |
+| `export` | Export Delta tables to CSV, XLSX, or TSV with sidecar manifests |
+| `quarantine` | Inspect, replay, and manage quarantined records |
+| `run-manifest` | Inspect immutable run provenance manifests and ledger history |
+| `diagnostics` | Generate a unified system health and metrics report |
+| `dq` | Validate data quality configuration and rules |
+| `lineage` | Inspect data lineage for individual records |
+| `config` | View and validate pipeline and global configuration |
+| `debug` | Run a pipeline with breakpoints for step-by-step inspection |
+
+## Exit codes
+
+BioETL follows Unix exit code conventions. Pipeline-specific codes are in the `80–87` and `130–143` ranges.
+
+| Code | Constant | Meaning |
+|---|---|---|
+| `0` | `OK` | Command completed successfully |
+| `82` | `PIPELINE_ERROR` | Pipeline execution failed |
+| `83` | `DATA_QUALITY_ERROR` | A data quality threshold was exceeded |
+| `84` | `LOCK_ERROR` | Failed to acquire or release a lock |
+| `85` | `STORAGE_ERROR` | Storage layer error |
+| `86` | `NETWORK_ERROR` | Network connectivity error |
+| `87` | `CHECKPOINT_ERROR` | Checkpoint read or write failure |
+| `130` | `SIGINT` | Interrupted by Ctrl+C |
+| `143` | `SIGTERM` | Terminated by SIGTERM |
+
+<Note>
+Exit codes `0`–`78` follow `sysexits.h` conventions. Codes `80` and above are BioETL-specific. Your shell scripts can test `$?` after any `bioetl` invocation.
+</Note>

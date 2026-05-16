@@ -1,0 +1,77 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "name": "BioETL",
+  "theme": "luma",
+  "favicon": "https://media.brand.dev/288cc7c4-5cef-4376-950b-bdf0083eedae.png",
+  "colors": {
+    "primary": "#94cb04",
+    "light": "#545454"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/SatoryKono/BioactivityDataAcquisition"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/medallion-architecture",
+              "concepts/providers",
+              "concepts/data-quality",
+              "concepts/checkpoints-and-resume"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/running-pipelines",
+              "guides/pipeline-configuration",
+              "guides/exporting-data",
+              "guides/observability",
+              "guides/troubleshooting"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment-variables",
+              "configuration/pipeline-yaml",
+              "configuration/data-quality-rules"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "CLI Reference",
+        "groups": [
+          {
+            "group": "Commands",
+            "pages": [
+              "cli/overview",
+              "cli/run",
+              "cli/workflow",
+              "cli/export",
+              "cli/quarantine",
+              "cli/run-manifest",
+              "cli/diagnostics"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

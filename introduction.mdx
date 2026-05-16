@@ -1,0 +1,47 @@
+---
+title: "BioETL: Acquire and normalize bioactivity data pipelines"
+sidebarTitle: "Introduction"
+description: "BioETL is a Python ETL framework that pulls bioactivity data from ChEMBL, PubChem, UniProt, PubMed, and more into analysis-ready Delta Lake tables."
+---
+
+BioETL is a Python ETL framework built for bioactivity data. It connects to eight public data providers — ChEMBL, PubChem, UniProt, UniProt ID Mapping, PubMed, CrossRef, OpenAlex, and Semantic Scholar — fetches records in bulk, validates and normalizes them, and writes the results to local Delta Lake tables you can query with Polars, Pandas, or any Parquet-compatible tool. Everything runs on your local machine with no Docker, Redis, or cloud services required.
+
+<CardGroup cols={2}>
+  <Card title="Medallion architecture" icon="layer-group" href="/concepts/medallion-architecture">
+    Data flows through three layers: Bronze stores raw API responses as compressed JSONL, Silver holds validated and normalized Delta Lake tables, and Gold holds aggregated analytics-ready tables.
+  </Card>
+  <Card title="8 supported providers" icon="database" href="/concepts/providers">
+    ChEMBL, PubChem, UniProt, UniProt ID Mapping, PubMed, CrossRef, OpenAlex, and Semantic Scholar — all with rate limiting and retry built in.
+  </Card>
+  <Card title="Local-first design" icon="laptop" href="/installation">
+    In-memory locking and local file storage mean you can run full pipelines without any external services. Your data stays on your machine.
+  </Card>
+  <Card title="Provenance tracking" icon="shield-check" href="/concepts/checkpoints-and-resume">
+    Immutable run manifests and an append-only ledger record every pipeline run, making your results reproducible and auditable.
+  </Card>
+</CardGroup>
+
+## Who BioETL is for
+
+BioETL is built for people who need clean, structured bioactivity data without writing their own API wrappers and ETL code from scratch:
+
+- **Researchers** who want to pull ChEMBL activity data or PubMed publications and load them into a notebook or analysis script.
+- **Cheminformatics engineers** who need reproducible pipelines with schema enforcement, data quality checks, and checkpointing.
+- **Drug discovery teams** who want a local data warehouse that combines compound, protein, assay, and literature data from multiple providers.
+
+## What you get
+
+After running a BioETL pipeline, you have Delta Lake tables in a `data/` directory on your local machine. These tables are:
+
+- **Analysis-ready** — normalized schemas, deduplicated records, and validated data types.
+- **Queryable with standard tools** — read them directly with Polars, Pandas, DuckDB, or any Parquet reader.
+- **Reproducible** — deterministic writes and run manifests let you re-run any pipeline and get the same result.
+- **Traceable** — every record carries provenance metadata back to its source API call.
+
+<Note>
+  BioETL runs entirely on your local machine. No Docker, Redis, or cloud services are required.
+</Note>
+
+## Get started
+
+The fastest way to get up and running is the [quickstart](/quickstart). If you want to understand prerequisites and installation options first, see [Installation](/installation).

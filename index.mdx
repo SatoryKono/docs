@@ -1,0 +1,70 @@
+---
+title: "BioETL: Bioactivity data pipelines for drug discovery"
+description: "BioETL acquires, normalizes, and validates bioactivity data from ChEMBL, PubChem, UniProt, and more into a unified Delta Lake warehouse."
+---
+
+BioETL is a Python framework for building reproducible bioactivity data pipelines. It connects to major public databases — ChEMBL, PubChem, UniProt, PubMed, CrossRef, OpenAlex, and Semantic Scholar — and delivers clean, analysis-ready datasets through a three-layer medallion architecture: Bronze (raw), Silver (normalized), and Gold (aggregated).
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="bolt" href="/quickstart">
+    Install BioETL and run your first pipeline in minutes.
+  </Card>
+  <Card title="Core Concepts" icon="layer-group" href="/concepts/medallion-architecture">
+    Understand Bronze, Silver, Gold layers and how data flows through BioETL.
+  </Card>
+  <Card title="Running Pipelines" icon="play" href="/guides/running-pipelines">
+    Learn how to run, resume, and replay ETL pipelines for any provider.
+  </Card>
+  <Card title="CLI Reference" icon="terminal" href="/cli/overview">
+    Full reference for every BioETL command and flag.
+  </Card>
+</CardGroup>
+
+## What BioETL does
+
+BioETL downloads bioactivity data from public APIs, applies schema validation and data quality checks, and writes the results to local Delta Lake tables you can query directly with Polars, Pandas, or any Parquet-compatible tool.
+
+<CardGroup cols={2}>
+  <Card title="Supported Providers" icon="database" href="/concepts/providers">
+    ChEMBL, PubChem, UniProt, PubMed, CrossRef, OpenAlex, Semantic Scholar.
+  </Card>
+  <Card title="Data Quality" icon="shield-check" href="/concepts/data-quality">
+    Configurable validation rules, soft/hard thresholds, and quarantine.
+  </Card>
+  <Card title="Export Data" icon="file-export" href="/guides/exporting-data">
+    Export Silver or Gold tables to CSV, XLSX, or TSV with provenance manifests.
+  </Card>
+  <Card title="Observability" icon="chart-line" href="/guides/observability">
+    Prometheus metrics, structured logs, and OpenTelemetry tracing.
+  </Card>
+</CardGroup>
+
+## Get started in 3 steps
+
+<Steps>
+  <Step title="Install BioETL">
+    Clone the repository and install with `uv` or `pip`.
+    ```bash
+    git clone https://github.com/SatoryKono/BioactivityDataAcquisition.git
+    cd BioactivityDataAcquisition
+    make install
+    ```
+  </Step>
+  <Step title="Run your first pipeline">
+    Fetch 100 ChEMBL activity records to verify your setup.
+    ```bash
+    bioetl run --pipeline chembl_activity --limit 100
+    ```
+  </Step>
+  <Step title="Explore your data">
+    List all available tables and export results for analysis.
+    ```bash
+    bioetl export --list
+    bioetl export chembl.activity --format csv
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  BioETL runs entirely on your local machine. No Docker, Redis, or cloud services are required.
+</Note>

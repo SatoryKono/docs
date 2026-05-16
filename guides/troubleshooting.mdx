@@ -1,0 +1,327 @@
+---
+title: "Troubleshoot common BioETL pipeline errors and failures"
+sidebarTitle: "Troubleshooting"
+description: "Diagnose and resolve the most common BioETL errors, from missing pipeline configs and lock failures to data quality thresholds and schema drift."
+---
+
+This guide covers the errors you are most likely to encounter when running
+BioETL pipelines. Each section describes the symptom, the most likely cause,
+and the steps to resolve it. For a machine-readable system snapshot to share
+with your team, run `bioetl diagnostics --json --output report.json` at any
+time.
+
+<AccordionGroup>
+  <Accordion title="PipelineNotFoundError: No pipeline named '...'">
+    **Symptom**: The CLI reports that the pipeline name you passed to
+    `--pipeline` does not exist.
+
+    **Cause**: The name does not match any YAML file under `configs/entities/`,
+    or there is a typo in the name.
+
+    **Resolution**:
+
+    <Steps>
+      <Step title="List available pipelines">
+        ```bash
+        bioetl config list-pipelines
+        ```
+
+        This is the authoritative list of valid pipeline names.
+      </Step>
+      <Step title="Check the YAML file exists">
+        Pipeline names map directly to files in `configs/entities/`. The
+        pipeline `chembl_activity` corresponds to
+        `configs/entities/chembl/activity.yaml`. Confirm the file is present.
+      </Step>
+      <Step title="Validate the config">
+        If the file exists, validate it to ensure there are no parse errors:
+
+        ```bash
+        bioetl config validate chembl_activity
+        ```
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="LockNotAcquiredError">
+    **Symptom**: BioETL refuses to start a pipeline run, reporting that it
+    cannot acquire a lock.
+
+    **Cause**: A previous run of the same pipeline is still in progress, or a
+    prior run crashed and left an orphaned in-memory lock state. BioETL uses
+    in-memory locks, so a lock cannot persist across processes — if the original
+    process is gone, the lock is also gone.
+
+    **Resolution**:
+
+    <Steps>
+      <Step title="Check for running processes">
+        Confirm whether another `bioetl` or `python` process is already running
+        the same pipeline:
+
+        ```bash
+        ps aux | grep bioetl
+        ```
+      </Step>
+      <Step title="Kill the stale process if needed">
+        If a process is genuinely stuck (not merely slow), terminate it at the
+        OS level using its PID. Do not use `bioetl lock release` across
+        processes — it only works for locks held in the current process.
+      </Step>
+      <Step title="Restart the pipeline">
+        Once the conflicting process is gone, restart normally:
+
+        ```bash
+        bioetl run --pipeline chembl_activity
+        ```
+
+        To resume from the last checkpoint rather than starting over:
+
+        ```bash
+        bioetl run --pipeline chembl_activity --resume
+        ```
+      </Step>
+    </Steps>
+
+    <Note>
+    BioETL's in-memory locks have a 90-second TTL with a 30-second heartbeat.
+    If the process exits cleanly or uncleanly, the lock is released either
+    immediately or when the TTL expires.
+    </Note>
+  </Accordion>
+
+  <Accordion title="DQ threshold exceeded (exit code 83)">
+    **Symptom**: The pipeline exits with code `83` and the run summary shows a
+    high percentage of records in quarantine.
+
+    **Cause**: A data quality rule triggered on too many records, pushing the
+    quarantine rate above the configured threshold for that pipeline.
+
+    **Resolution**:
+
+    <Steps>
+      <Step title="Inspect quarantined records">
+        ```bash
+        bioetl quarantine inspect --pipeline chembl_activity --limit 50
+        ```
+
+        For Silver filter rejects specifically:
+
+        ```bash
+        bioetl quarantine inspect --pipeline chembl_activity --silver-filter-only --limit 20
+        ```
+      </Step>
+      <Step title="Check aggregated error breakdown">
+        ```bash
+        bioetl quarantine stats --pipeline chembl_activity
+        bioetl quarantine stats --pipeline chembl_activity --silver-filter-only --group-by reason-code-field
+        ```
+
+        Focus on the structured fields `reason_code`, `field`, `rule_type`,
+        and `operator` rather than the free-text `Reason` message.
+      </Step>
+      <Step title="Decide on a fix">
+        - If the data from the upstream API has genuinely changed (new allowed
+          values, different units), update the `quality` or `filters` section
+          of the entity config and re-run.
+        - If the quarantine rate is expected for this dataset, adjust the
+          threshold in the config or run with `--run-type rebuild` after fixing
+          the root cause.
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="Network errors (exit code 86)">
+    **Symptom**: The pipeline exits with code `86`, or you see HTTP 429 (rate
+    limit) or connection errors in the logs.
+
+    **Cause**: The upstream data provider is throttling requests, temporarily
+    unavailable, or unreachable.
+
+    **Resolution**:
+
+    <Steps>
+      <Step title="Check provider connectivity">
+        ```bash
+        bioetl health check --provider chembl
+        ```
+      </Step>
+      <Step title="Wait for automatic retry">
+        BioETL retries failed HTTP requests with exponential backoff
+        automatically. For transient rate limits, simply re-running the pipeline
+        is often sufficient.
+      </Step>
+      <Step title="Check retry exhaustion">
+        If retries were fully exhausted, the `bioetl_data_source_retry_exhausted_total`
+        metric will be non-zero. Inspect the logs for details:
+
+        ```bash
+        grep -i "retry" reports/logs/bioetl.log
+        ```
+      </Step>
+      <Step title="Check circuit breaker state">
+        If the circuit breaker is open (`bioetl_circuit_breaker_state == 2`),
+        BioETL is blocking requests to protect the provider. Wait approximately
+        5 minutes for the circuit to move to half-open, then retry.
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="FileNotFoundError on data/">
+    **Symptom**: The pipeline crashes with a `FileNotFoundError` when trying to
+    read or write local files under `data/`.
+
+    **Cause**: The expected directory structure under `data/` is missing or the
+    directory is not writable by the current user.
+
+    **Resolution**:
+
+    <Steps>
+      <Step title="Verify the data directory exists">
+        ```bash
+        ls -la data/
+        ```
+
+        BioETL expects `data/output/bronze/`, `data/output/silver/`,
+        `data/output/gold/`, `data/output/checkpoints/`, and
+        `data/output/quarantine/` to be present and writable.
+      </Step>
+      <Step title="Re-run to create missing directories">
+        If the base `data/` directory exists but subdirectories are missing,
+        BioETL will create them on the first run. If `data/` itself is missing,
+        create it and ensure it is writable, then re-run:
+
+        ```bash
+        mkdir -p data
+        bioetl run --pipeline chembl_activity --limit 10
+        ```
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="pydantic.ValidationError">
+    **Symptom**: The pipeline fails during the `transform` or `load` stage with
+    a Pydantic validation error.
+
+    **Cause**: The upstream API returned a field that does not match the
+    expected schema. This is known as **schema drift** — a provider changed
+    their API response structure.
+
+    **Resolution**:
+
+    <Steps>
+      <Step title="Identify the failing field">
+        Read the full error message carefully. Pydantic errors identify the
+        field name and the value that failed validation.
+      </Step>
+      <Step title="Inspect the raw Bronze data">
+        Check the most recent Bronze file for the affected entity to compare
+        the raw API response against the expected schema:
+
+        ```text
+        data/output/bronze/{provider}/{entity}/{date}/
+        ```
+
+        Open a batch file and look for the field that triggered the error.
+        Decompress zstd files with `zstd -d <file>.jsonl.zst -o <file>.jsonl`
+        before reading.
+      </Step>
+      <Step title="Update your configuration">
+        If the schema change is expected (for example, a new nullable field or
+        a changed value range), update the corresponding validation rules in
+        `configs/entities/{provider}/{entity}.yaml` to accommodate the new
+        structure. Then run `bioetl dq validate --entity {provider}.{entity}`
+        to confirm your config is valid before re-running the pipeline.
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="Checkpoint compatibility error">
+    **Symptom**: A `--resume` run fails or is blocked because the checkpoint is
+    incompatible with the current pipeline configuration.
+
+    **Cause**: The pipeline's effective configuration changed between the
+    original run and the resume attempt. BioETL's default policy (`soft_fail`)
+    blocks resume rather than risk producing inconsistent output.
+
+    **Resolution**:
+
+    <Steps>
+      <Step title="Use observe mode for a degraded resume">
+        If you need to resume in spite of non-identity warnings, switch to
+        `observe` mode. Note that canonical execution-identity mismatches still
+        block resume even in this mode:
+
+        ```bash
+        bioetl run --pipeline chembl_activity --resume --checkpoint-compatibility observe
+        ```
+      </Step>
+      <Step title="Start a fresh run">
+        If the checkpoint is too stale or the config change is significant,
+        start over without `--resume`. For a full recompute from Bronze:
+
+        ```bash
+        bioetl run --pipeline chembl_activity --run-type rebuild --yes
+        ```
+      </Step>
+    </Steps>
+  </Accordion>
+
+  <Accordion title="VCR cassette not found (test mode)">
+    **Symptom**: Tests fail because a VCR cassette file is missing.
+
+    **Cause**: A test that uses VCR (recorded HTTP interactions) has no
+    recorded cassette for the current request pattern.
+
+    **Resolution**:
+
+    Re-record the cassette by running with `--vcr-record=new_episodes`. This
+    makes live HTTP requests and saves the responses for future runs:
+
+    ```bash
+    pytest tests/integration/... --vcr-record=new_episodes
+    ```
+  </Accordion>
+
+  <Accordion title="Windows/WSL virtual environment confusion">
+    **Symptom**: Imports fail, packages appear missing, or the wrong Python
+    version is used when switching between Windows and WSL.
+
+    **Cause**: Windows and WSL use separate virtual environments that must
+    never be shared. Symlinks and filesystem paths do not translate cleanly
+    across the OS boundary.
+
+    **Resolution**:
+
+    Keep two separate virtual environments and always invoke BioETL through the
+    correct interpreter for the current OS:
+
+    ```powershell
+    # Windows PowerShell
+    .\.venv-win\Scripts\python.exe -m bioetl run --pipeline chembl_activity
+    ```
+
+    ```bash
+    # WSL / Linux
+    "${BIOETL_WSL_VENV_DIR:-$HOME/.venvs/bioetl}/bin/python" -m bioetl run --pipeline chembl_activity
+    ```
+
+    <Warning>
+    Never activate the Windows `.venv-win` inside WSL or vice versa. The two
+    environments must remain completely separate.
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+## Get a full diagnostics report
+
+If you cannot identify the cause from the sections above, capture a full system
+report:
+
+```bash
+bioetl diagnostics --json --output report.json
+```
+
+This single file contains metrics, health status, checkpoint state, manifest
+history, and quarantine statistics. Share it when asking for help or filing a
+bug report at [github.com/SatoryKono/BioactivityDataAcquisition](https://github.com/SatoryKono/BioactivityDataAcquisition/issues).

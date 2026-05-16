@@ -1,0 +1,228 @@
+---
+title: "Run, resume, and replay BioETL data pipeline runs"
+sidebarTitle: "Run Pipelines"
+description: "Learn how to run individual pipelines, choose a run type, resume interrupted jobs, and coordinate multi-pipeline workflows from the command line."
+---
+
+BioETL exposes all pipeline execution through the `bioetl` CLI. Every command is
+designed for local, single-process use — no external scheduler or message broker
+is required. This guide walks through the full range of execution patterns, from
+a quick test run with a record limit to a declarative multi-step workflow.
+
+## Run a single pipeline
+
+The simplest invocation fetches and processes all new records since the last
+successful checkpoint:
+
+```bash
+bioetl run --pipeline chembl_activity
+```
+
+Use `bioetl config list-pipelines` to see every available pipeline name before
+running.
+
+### Limit records for testing
+
+Pass `--limit` to cap the number of records fetched. This is useful when you
+want to validate transforms or data quality rules without waiting for a full
+ingestion:
+
+```bash
+bioetl run --pipeline chembl_activity --limit 100
+```
+
+### Preview without writing
+
+Add `--dry-run` to see what the pipeline would do — including which Silver and
+Gold rows would be cleared — without committing any changes:
+
+```bash
+bioetl run --pipeline chembl_activity --run-type rebuild --dry-run
+```
+
+## Run types
+
+BioETL supports three run types that control how existing data is handled.
+
+| Run type | Flag | What it does | Clears data? |
+|---|---|---|---|
+| Incremental | *(default)* | Processes new records since the last checkpoint | No |
+| Backfill | `--run-type backfill` | Fills gaps for a specific range | Silver + Gold |
+| Rebuild | `--run-type rebuild` | Recomputes all downstream data from Bronze | Silver + Gold |
+
+<Tabs>
+  <Tab title="Incremental">
+    Incremental is the default. BioETL reads the last checkpoint and fetches
+    only records that arrived after it:
+
+    ```bash
+    bioetl run --pipeline chembl_activity
+    ```
+  </Tab>
+  <Tab title="Backfill">
+    Backfill clears Silver and Gold for the target range and repopulates them.
+    BioETL asks for confirmation unless you pass `--yes`:
+
+    ```bash
+    # Interactive confirmation
+    bioetl run --pipeline chembl_activity --run-type backfill
+
+    # Skip confirmation
+    bioetl run --pipeline chembl_activity --run-type backfill --yes
+    ```
+  </Tab>
+  <Tab title="Rebuild">
+    Rebuild recomputes Silver and Gold from whatever Bronze data is already on
+    disk. Use this when you have changed transform logic or quality rules and
+    want to apply them retroactively:
+
+    ```bash
+    # Interactive confirmation
+    bioetl run --pipeline chembl_activity --run-type rebuild
+
+    # Skip confirmation
+    bioetl run --pipeline chembl_activity --run-type rebuild --yes
+    ```
+  </Tab>
+</Tabs>
+
+## Resume an interrupted run
+
+If a pipeline was interrupted (for example by Ctrl+C or a system restart),
+restart it from the last saved checkpoint with `--resume`:
+
+```bash
+bioetl run --pipeline chembl_activity --resume
+```
+
+<Note>
+`--resume` continues from a checkpoint snapshot. It is not a strict exact
+replay of a prior run. If the checkpoint is incompatible with the current
+runtime configuration, BioETL blocks the resume and reports the mismatch.
+</Note>
+
+You can control how strictly BioETL enforces checkpoint compatibility:
+
+```bash
+# Degraded mode — warn on non-identity mismatches, but still block identity drift
+bioetl run --pipeline chembl_activity --resume --checkpoint-compatibility observe
+
+# Hard fail on any mismatch (exits with error instead of blocking silently)
+bioetl run --pipeline chembl_activity --resume --checkpoint-compatibility hard_fail
+```
+
+## Filter records by CSV
+
+To process only a specific subset of records, supply a CSV file of IDs:
+
+```bash
+bioetl run --pipeline chembl_activity \
+    --input-csv data/filter-ids.csv \
+    --filter-column molecule_id \
+    --filter-field molecule_chembl_id
+```
+
+`--filter-column` is the column name in the CSV; `--filter-field` is the
+corresponding field name in the source API.
+
+## Run all pipelines for a provider
+
+`run-all` runs every pipeline registered for a given data source, one after the
+other:
+
+```bash
+# List what would run without executing
+bioetl run-all --source chembl --list-only
+
+# Run all ChEMBL pipelines
+bioetl run-all --source chembl
+
+# Run all with a record limit (useful for smoke-testing)
+bioetl run-all --source chembl --limit 100
+```
+
+## Run composite pipelines
+
+Composite pipelines enrich a seed entity with data from multiple providers. The
+`publication` composite, for example, combines records from several literature
+sources:
+
+```bash
+# Full composite run
+bioetl run-composite --composite publication
+
+# Limit seed records (useful for testing)
+bioetl run-composite --composite publication --seed-limit 100
+
+# Run only specific enrichers
+bioetl run-composite --composite publication --enrich-only crossref,openalex
+
+# Resume an interrupted composite run
+bioetl run-composite --composite publication --resume
+```
+
+## Declarative workflow runs
+
+Workflows let you define a DAG of pipeline steps in a YAML file under
+`configs/workflows/`. Run a workflow by name:
+
+```bash
+# Dry run to verify the plan
+bioetl workflow run chembl_activity --dry-run
+
+# Run the workflow
+bioetl workflow run chembl_activity
+
+# Run with a record limit applied to every step
+bioetl workflow run chembl_activity --limit 1000
+
+# Resume the last failed or incomplete workflow run
+bioetl workflow run chembl_core --resume-last
+
+# Check durable workflow status
+bioetl workflow status chembl_activity
+```
+
+<Tip>
+Use `--only-steps` to run a subset of steps and their required dependencies,
+without re-running steps that already succeeded:
+
+```bash
+bioetl workflow run chembl_core --only-steps summarize_core_extracts
+```
+</Tip>
+
+## Exit codes
+
+BioETL communicates the outcome of every run through its exit code. Capture
+this in scripts and CI to branch on failure type:
+
+| Code | Meaning |
+|---|---|
+| `0` | Success |
+| `82` | Pipeline execution error |
+| `83` | Data quality threshold exceeded |
+| `84` | Lock acquisition failed |
+| `86` | Network error |
+| `130` | Interrupted (Ctrl+C) |
+
+```bash
+bioetl run --pipeline chembl_activity
+echo "Exit code: $?"
+```
+
+Exit code `83` means too many records failed data quality checks. Inspect the
+quarantine to understand which rules triggered before adjusting thresholds or
+fixing upstream data:
+
+```bash
+bioetl quarantine inspect --pipeline chembl_activity --limit 50
+```
+
+## View run history
+
+Every run produces an immutable manifest. Inspect it after a run completes:
+
+```bash
+bioetl run-manifest show <RUN-ID>
+```

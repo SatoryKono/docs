@@ -1,0 +1,250 @@
+---
+title: "bioetl workflow — execute declarative pipeline DAGs"
+sidebarTitle: "bioetl workflow"
+description: "Reference for bioetl workflow run and workflow status: DAG execution, resume behavior, persistence profiles, and all available options."
+---
+
+The `workflow` command executes declarative pipeline DAGs defined in YAML files under `configs/workflows/`. Each workflow specifies a set of pipeline steps and their dependencies. BioETL runs the steps in dependency order, writing an immutable workflow manifest before execution begins and appending events to a durable ledger as each step completes.
+
+## Subcommands
+
+```bash
+bioetl workflow run <NAME> [OPTIONS]
+bioetl workflow status <NAME> [OPTIONS]
+```
+
+| Subcommand | Description |
+|---|---|
+| `run` | Execute a declarative workflow, sequentially resolving its DAG of pipeline steps |
+| `status` | Show the current or persisted execution status of a workflow |
+
+---
+
+## workflow run
+
+Runs a named workflow, resolving its DAG, executing steps in dependency order, and writing control-plane artifacts throughout.
+
+**Syntax:**
+
+```bash
+bioetl workflow run <NAME> [OPTIONS]
+```
+
+### Options
+
+<ParamField query="--dry-run" type="flag" default="false">
+  Enable dry-run mode for all pipeline steps in this workflow. No data is written.
+</ParamField>
+
+<ParamField query="--only-steps" type="string">
+  Comma-separated list of step names to execute. Required dependencies of those steps are also run.
+</ParamField>
+
+<ParamField query="--run-type" type="choice">
+  Override the run type for all pipeline steps: `incremental`, `backfill`, or `rebuild`.
+</ParamField>
+
+<ParamField query="--start-offset" type="integer">
+  Override the `start_offset` for all pipeline steps.
+</ParamField>
+
+<ParamField query="--limit" type="integer">
+  Override the record limit for all pipeline steps.
+</ParamField>
+
+<ParamField query="--input-csv" type="path">
+  Override the CSV filter input for all pipeline steps.
+</ParamField>
+
+<ParamField query="--filter-column" type="string">
+  Override the CSV filter column for all pipeline steps.
+</ParamField>
+
+<ParamField query="--filter-field" type="string">
+  Override the source filter field for all pipeline steps.
+</ParamField>
+
+<ParamField query="--vacuum-after-run" type="flag">
+  Override VACUUM execution for all pipeline steps.
+</ParamField>
+
+<ParamField query="--vacuum-retention-days" type="integer">
+  Override the VACUUM retention period (days) for all pipeline steps.
+</ParamField>
+
+<ParamField query="--log-level" type="string">
+  Override the log level for all pipeline steps.
+</ParamField>
+
+<ParamField query="--ignore-yaml-filter" type="flag" default="false">
+  Ignore any YAML filter defaults defined in the pipeline steps.
+</ParamField>
+
+<ParamField query="--skip-gold" type="flag" default="false">
+  Skip Gold layer writes for all pipeline steps.
+</ParamField>
+
+<ParamField query="--execution-context" type="string">
+  Override the execution context for all pipeline steps.
+</ParamField>
+
+<ParamField query="--use-cached-bronze / --no-cached-bronze" type="flag" default="false">
+  Override Bronze cache usage for all pipeline steps.
+</ParamField>
+
+<ParamField query="--cached-bronze-path" type="path">
+  Explicit Bronze cache path for all pipeline steps.
+</ParamField>
+
+<ParamField query="--cached-bronze-date" type="string">
+  Bronze cache date filter for all pipeline steps. Format: `YYYY-MM-DD`.
+</ParamField>
+
+<ParamField query="--exact-replay / --no-exact-replay" type="flag" default="false">
+  Override strict exact replay for all pipeline steps. Fail-closed: aborts if the replay contract cannot be satisfied.
+</ParamField>
+
+<ParamField query="--required-persistence-profile" type="choice">
+  Per-run override for the control-plane persistence profile: `degraded_observable`, `replay_ready`, or `forensic_grade`.
+</ParamField>
+
+<ParamField query="--replay-of-run-id" type="string">
+  Explicit parent `run_id` for exact replay pipeline steps.
+</ParamField>
+
+<ParamField query="--replay-of-manifest-id" type="string">
+  Explicit parent `manifest_id` for exact replay pipeline steps.
+</ParamField>
+
+<ParamField query="--tracing / --no-tracing" type="flag">
+  Override distributed tracing for all pipeline steps. Required if you expect non-empty data in the Explore Traces dashboard.
+</ParamField>
+
+<ParamField query="--resume-last" type="flag" default="false">
+  Resume the last `failed` or `incomplete` workflow run that shares the same execution fingerprint.
+</ParamField>
+
+<ParamField query="--force-steps" type="string">
+  Comma-separated step names to force-execute during a resume, instead of skipping them as already-complete.
+</ParamField>
+
+<ParamField query="--repair-steps" type="string">
+  Comma-separated step names to mark as the repair path for destructive ambiguity recovery.
+</ParamField>
+
+---
+
+## workflow status
+
+Shows the durable execution status of a workflow when persisted state exists. If no persisted state is found, the command returns the bounded topology-only surface.
+
+**Syntax:**
+
+```bash
+bioetl workflow status <NAME> [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--only-steps` | string | — | Show only the specified steps and their required dependencies |
+| `--format` | choice | `text` | Output format: `text`, `json`, or `yaml` |
+| `--run-id` | string | — | Show persisted status for a specific `workflow_run_id` |
+
+---
+
+## Resume behavior
+
+`--resume-last` resumes the most recent `failed` or `incomplete` workflow run that matches the same `execution_fingerprint`. It uses semantic fingerprint identity, not just the workflow name.
+
+<Warning>
+If the workflow state shows `repair_required`, you must use `--repair-steps` or `--force-steps` to continue. Silent replay of ambiguous state is not permitted.
+</Warning>
+
+When resuming:
+- Steps that already completed successfully are skipped by default.
+- `--force-steps a,b` overrides the skip behavior for specific steps.
+- `--repair-steps a,b` marks steps as the explicit repair path for destructive ambiguity recovery.
+
+<Note>
+Pipeline-level `--resume` is not exposed on `workflow run`. Use `--resume-last` for workflow-level resume.
+</Note>
+
+---
+
+## Persistence profiles
+
+The `--required-persistence-profile` option controls what evidence the control plane must retain for this workflow run.
+
+| Profile | Description |
+|---|---|
+| `degraded_observable` | Opt-down from the default floor. Suitable for local/live runs where full replay evidence is not needed. |
+| `replay_ready` | Default floor for standard runs. Requires `run_manifest_enabled=true` and an execution context within the published strict exact-replay support boundary. |
+| `forensic_grade` | Highest evidence level. Requires both `run_manifest_enabled=true` and `run_ledger_enabled=true`, plus replay-ready and lineage-closure surfaces. |
+
+<Note>
+`--exact-replay` always promotes the effective profile back to the strict published default. You cannot use `--exact-replay` to bypass exact-replay guardrails by pairing it with `degraded_observable`.
+</Note>
+
+---
+
+## Control-plane behavior
+
+- `workflow run` creates an immutable workflow manifest before execution begins.
+- `workflow run` writes append-only ledger events and mutable workflow execution state as steps complete.
+- `workflow run` starts the local metrics HTTP server on demand and performs a best-effort metrics flush on completion, so Prometheus and Grafana workflow dashboards can observe completed runs.
+- `workflow status` uses persisted state when available. Without persisted state, it returns the bounded topology surface only.
+- `workflow run --tracing` is required if you expect non-empty data in the Explore Traces surface; without it, the runtime may use `NoOpTracing`.
+
+---
+
+## Examples
+
+```bash
+# Dry run to preview a workflow
+bioetl workflow run chembl_activity --dry-run
+
+# Run with a record limit
+bioetl workflow run chembl_activity --limit 1000
+
+# Filter to specific IDs from a CSV
+bioetl workflow run chembl_activity \
+    --input-csv data/filter-ids.csv \
+    --filter-column molecule_id \
+    --filter-field molecule_chembl_id
+
+# Exact replay with explicit ancestry
+bioetl workflow run chembl_activity \
+    --use-cached-bronze \
+    --exact-replay \
+    --replay-of-run-id parent-run-1 \
+    --replay-of-manifest-id manifest-parent-1
+
+# Observable run without replay_ready evidence claim
+bioetl workflow run chembl_publication \
+    --limit 1000 \
+    --required-persistence-profile degraded_observable
+
+# Show workflow status (default text output)
+bioetl workflow status chembl_activity
+
+# Run only specific steps
+bioetl workflow run chembl_core --only-steps summarize_core_extracts
+
+# Resume the last failed or incomplete run
+bioetl workflow run chembl_core --resume-last
+
+# Resume with explicit repair for an ambiguous step
+bioetl workflow run chembl_core \
+    --resume-last \
+    --repair-steps reconcile_assay_target_orphans
+
+# Show persisted status for a specific run ID
+bioetl workflow status chembl_core \
+    --run-id 00000000-0000-0000-0000-000000000111
+
+# Show status as JSON
+bioetl workflow status chembl_core --format json
+
+# Dry run for a multi-provider workflow
+bioetl workflow run publication_provider_pack --dry-run
+```

@@ -1,0 +1,297 @@
+---
+title: "bioetl run — execute, resume, and replay pipelines"
+sidebarTitle: "bioetl run"
+description: "Complete option reference for bioetl run, run-all, and run-composite: run types, resume and replay flags, Bronze cache, and usage examples."
+---
+
+The `run` family of commands is the core execution surface in BioETL. Use `bioetl run` to execute a single pipeline for one entity, `bioetl run-all` to run every pipeline for a provider in sequence, and `bioetl run-composite` to execute a composite (seed + enrichers) pipeline that pulls from multiple providers.
+
+## bioetl run
+
+Executes the ETL pipeline for a single named entity, applying Bronze extraction, Silver normalization, and optionally Gold aggregation.
+
+**Syntax:**
+
+```bash
+bioetl run --pipeline <NAME> [OPTIONS]
+```
+
+### Required parameter
+
+<ParamField query="--pipeline" type="string" required>
+  The pipeline name. Must match a YAML file in `configs/entities/`. For example, `chembl_activity` corresponds to `configs/entities/chembl_activity.yaml`.
+</ParamField>
+
+### Options
+
+<ParamField query="--run-type" type="choice" default="incremental">
+  Run type: `incremental`, `backfill`, or `rebuild`. See the run types table below.
+</ParamField>
+
+<ParamField query="--limit" type="integer">
+  Maximum number of records to process. Useful for testing without fetching a full dataset.
+</ParamField>
+
+<ParamField query="--resume" type="flag" default="false">
+  Resume from the last checkpoint. Continues a previously interrupted run without re-fetching already-processed records.
+</ParamField>
+
+<ParamField query="--start-offset" type="integer">
+  Begin an incremental run from a specific offset, skipping earlier records.
+</ParamField>
+
+<ParamField query="--dry-run" type="flag" default="false">
+  Preview what the pipeline would do without writing any data.
+</ParamField>
+
+<ParamField query="--yes, -y" type="flag" default="false">
+  Skip the confirmation prompt that appears before `rebuild` and `backfill` runs.
+</ParamField>
+
+<ParamField query="--input-csv" type="path">
+  Path to a CSV file containing IDs to filter the pipeline run to a specific subset of records.
+</ParamField>
+
+<ParamField query="--filter-column" type="string">
+  Column name in the CSV file to use as the ID source. Runtime fallback is typically `id`.
+</ParamField>
+
+<ParamField query="--filter-field" type="string">
+  API field name to match against the CSV IDs. The effective default depends on the pipeline.
+</ParamField>
+
+<ParamField query="--vacuum-after-run" type="flag">
+  Run a Delta Lake VACUUM after a successful pipeline completion to reclaim storage.
+</ParamField>
+
+<ParamField query="--vacuum-retention-days" type="integer">
+  Retention period in days for VACUUM. Overrides the value in your YAML config.
+</ParamField>
+
+<ParamField query="--debug" type="flag" default="false">
+  Enable DEBUG-level logging for this run.
+</ParamField>
+
+<ParamField query="--checkpoint-compatibility" type="choice">
+  Checkpoint compatibility policy for resume: `observe`, `soft_fail`, or `hard_fail`. Overrides the `settings.pipeline.control_plane.checkpoint_compatibility_policy` setting for this run.
+</ParamField>
+
+<ParamField query="--health-server / --no-health-server" type="flag" default="true">
+  Enable or disable the HTTP health server during the run.
+</ParamField>
+
+<ParamField query="--health-port" type="integer" default="8081">
+  Port for the health server.
+</ParamField>
+
+<ParamField query="--use-cached-bronze / --no-cached-bronze" type="flag" default="false">
+  Read from a local Bronze cache instead of calling external APIs.
+</ParamField>
+
+<ParamField query="--cached-bronze-date" type="string">
+  Filter the Bronze cache to records from a specific date. Format: `YYYY-MM-DD`.
+</ParamField>
+
+<ParamField query="--cached-bronze-path" type="path">
+  Explicit path to the Bronze cache directory.
+</ParamField>
+
+<ParamField query="--exact-replay / --no-exact-replay" type="flag" default="false">
+  Request strict exact replay within the published support boundary. This is a fail-closed policy: if the runtime cannot satisfy the replay contract, the run aborts.
+</ParamField>
+
+<ParamField query="--required-persistence-profile" type="choice">
+  Per-run override for the control-plane persistence profile: `degraded_observable`, `replay_ready`, or `forensic_grade`.
+</ParamField>
+
+<ParamField query="--replay-of-run-id" type="string">
+  The parent `run_id` for an exact replay. Only valid alongside `--exact-replay`.
+</ParamField>
+
+<ParamField query="--replay-of-manifest-id" type="string">
+  The parent `manifest_id` for an exact replay. Only valid alongside `--exact-replay`.
+</ParamField>
+
+### Run types
+
+| Type | Description | Clears data |
+|---|---|---|
+| `incremental` | Process new records since the last checkpoint | No |
+| `backfill` | Process a specific date range | Silver and Gold |
+| `rebuild` | Fully recompute all derived data from available Bronze | Silver and Gold |
+
+<Warning>
+`rebuild` and `backfill` delete Silver and Gold data before reprocessing. Use `--dry-run` first to preview the scope of the operation, and `--yes` to skip the confirmation prompt in automated scripts.
+</Warning>
+
+### Resume and replay behavior
+
+`--resume` is checkpoint continuation — it picks up where the last run left off using snapshot state and compatibility checks. It is not the same as exact replay.
+
+`--exact-replay` is a strict reproducibility mode that uses snapshot-backed inputs within the published support boundary. If you pass `--replay-of-run-id` or `--replay-of-manifest-id`, the runtime publishes explicit replay ancestry in the manifest but does not treat the run as an ordinary rerun.
+
+<Note>
+`--replay-of-run-id` and `--replay-of-manifest-id` must always be used together with `--exact-replay`. Using them for ordinary reruns or rebuilds is not supported.
+</Note>
+
+### Checkpoint compatibility policy
+
+The `--checkpoint-compatibility` option controls what happens when a resume encounters a checkpoint identity mismatch:
+
+| Policy | Behavior |
+|---|---|
+| `soft_fail` | Block resume on any incompatibility (default) |
+| `observe` | Allow resume for non-identity mismatches; still blocks on canonical identity mismatch |
+| `hard_fail` | Abort the run with an error on any incompatibility |
+
+<Note>
+When `--required-persistence-profile` is `replay_ready` or `forensic_grade`, or when `--exact-replay` is set, the runtime enforces `hard_fail` regardless of the configured policy.
+</Note>
+
+### Examples
+
+```bash
+# Incremental run (default)
+bioetl run --pipeline chembl_activity
+
+# Run with a record limit for testing
+bioetl run --pipeline chembl_activity --limit 100
+
+# Full rebuild with no confirmation prompt
+bioetl run --pipeline chembl_activity --run-type rebuild --yes
+
+# Preview a rebuild without writing data
+bioetl run --pipeline chembl_activity --run-type rebuild --dry-run
+
+# Resume an interrupted run
+bioetl run --pipeline chembl_activity --resume
+
+# Start incremental from a known offset
+bioetl run --pipeline chembl_activity --start-offset 5000
+
+# Filter to a specific set of IDs from a CSV
+bioetl run --pipeline chembl_activity \
+    --input-csv data/filter-ids.csv \
+    --filter-column molecule_id \
+    --filter-field molecule_chembl_id
+
+# Run with DEBUG logging
+bioetl run --pipeline chembl_activity --debug
+
+# Run from local Bronze cache
+bioetl run --pipeline chembl_activity --use-cached-bronze
+
+# Observable live run without claiming replay_ready evidence
+bioetl run --pipeline chembl_publication --limit 1000 \
+    --required-persistence-profile degraded_observable
+
+# Strict exact replay with explicit ancestry
+bioetl run --pipeline chembl_activity \
+    --use-cached-bronze \
+    --exact-replay \
+    --replay-of-run-id 7f26d7b2-2c25-4aef-bf4c-030e4f8a4f87 \
+    --replay-of-manifest-id manifest-parent-001
+
+# Apply checkpoint compatibility in observe mode
+bioetl run --pipeline chembl_activity --checkpoint-compatibility observe
+```
+
+---
+
+## bioetl run-all
+
+Runs every pipeline for a given provider sequentially in a single command.
+
+**Syntax:**
+
+```bash
+bioetl run-all --source <PROVIDER> [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--source` | string | required | Provider name: `chembl`, `pubchem`, `uniprot`, etc. |
+| `--run-type` | choice | `incremental` | Run type for all pipelines |
+| `--limit` | integer | — | Record limit applied to each pipeline |
+| `--dry-run` | flag | false | Show which pipelines would run without executing them |
+| `--yes, -y` | flag | false | Skip confirmation prompts |
+| `--list-only` | flag | false | Print the list of pipelines without running them |
+| `--debug` | flag | false | Enable DEBUG logging |
+| `--health-server / --no-health-server` | flag | true | Enable or disable the health server |
+| `--health-port` | integer | 8081 | Health server port |
+
+```bash
+# Run all ChEMBL pipelines
+bioetl run-all --source chembl
+
+# Preview which pipelines would run
+bioetl run-all --source chembl --list-only
+
+# Dry run for PubChem
+bioetl run-all --source pubchem --dry-run
+
+# Rebuild all pipelines for a provider
+bioetl run-all --source chembl --run-type rebuild --yes
+```
+
+---
+
+## bioetl run-composite
+
+Runs a composite pipeline, which consists of a seed pipeline followed by one or more enricher pipelines that augment the seed data from additional providers.
+
+**Syntax:**
+
+```bash
+bioetl run-composite --composite <NAME> [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--composite` | string | required | Composite pipeline name |
+| `--resume` | flag | false | Resume from checkpoint snapshot + ledger replay |
+| `--dry-run` | flag | false | Preview without writing data |
+| `--seed-limit` | integer | — | Record limit for the seed pipeline |
+| `--enrich-only` | string | — | Comma-separated list of enrichers to run |
+| `--required-only` | flag | false | Skip optional enrichers |
+| `--force-enricher` | string | — | Force a specific enricher to re-run |
+| `--use-cached-bronze / --no-cached-bronze` | flag | false | Read from Bronze cache instead of APIs |
+| `--cached-bronze-date` | string | — | Filter Bronze cache by date (`YYYY-MM-DD`) |
+| `--cached-bronze-path` | path | — | Explicit Bronze cache directory path |
+| `--cached-bronze-enrichers / --no-cached-bronze-enrichers` | flag | — | Override cached Bronze for enrichers only |
+| `--cached-bronze-dependencies / --no-cached-bronze-dependencies` | flag | false | Override cached Bronze for dependency pipelines |
+| `--debug` | flag | false | Enable DEBUG logging |
+| `--health-server / --no-health-server` | flag | true | Enable or disable the health server |
+| `--health-port` | integer | 8081 | Health server port |
+
+```bash
+# Run the publication composite pipeline
+bioetl run-composite --composite publication
+
+# Limit the seed to 100 records
+bioetl run-composite --composite publication --seed-limit 100
+
+# Run only specific enrichers
+bioetl run-composite --composite publication --enrich-only crossref,openalex
+
+# Run only required enrichers, skip optional ones
+bioetl run-composite --composite publication --required-only
+
+# Run from Bronze cache
+bioetl run-composite --composite publication --use-cached-bronze
+```
+
+<Tip>
+Composite resume loads the checkpoint snapshot first, validates compatibility anchors including `composite_run_identity`, and then replays ledger events after `last_event_id`. This restores coarse-grained lifecycle milestones without fabricating rich checkpoint payloads.
+</Tip>
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success |
+| `82` | Pipeline execution error |
+| `83` | Data quality threshold exceeded |
+| `84` | Lock acquisition failed |
+| `86` | Network error |
+| `130` | Interrupted by Ctrl+C |

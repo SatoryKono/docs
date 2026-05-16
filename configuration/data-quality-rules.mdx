@@ -1,0 +1,376 @@
+---
+title: "Configure data quality rules for your BioETL pipelines"
+sidebarTitle: "DQ Rules"
+description: "How to define, layer, test, and override data quality validation rules in BioETL across global, provider, and entity config files."
+---
+
+BioETL applies data quality (DQ) rules to every record as it passes through the Silver layer. Rules are defined in YAML files and merged hierarchically — global defaults apply everywhere, provider rules narrow them for a specific source, and entity rules add the finest-grained checks. You can also apply one-off overrides inline in a pipeline config without touching shared files. This layered approach means you write each rule once, in the most appropriate place.
+
+---
+
+## Three-level rule hierarchy
+
+DQ rules are loaded from three file locations, in this order. Rules from later levels are merged on top of earlier ones.
+
+```text
+configs/base/quality.yaml                    ← Level 1: all pipelines
+configs/providers/{provider}.yaml            ← Level 2: all entities for this provider
+configs/entities/{provider}/{entity}.yaml    ← Level 3: this entity only
+```
+
+A fourth level — inline overrides in `pipeline.dq_overrides` — applies last and wins over all file-based rules. Use it sparingly and only for temporary exceptions.
+
+<Note>
+  Merge behavior differs by field type:
+  - **Scalars** (thresholds, policy flags): later value wins.
+  - **Validation lists** (`*_validations` keys): concatenated and deduplicated by `field`/`name`.
+  - **Nested dicts**: recursively merged.
+</Note>
+
+---
+
+## Level 1: Global defaults
+
+`configs/base/quality.yaml` sets the baseline for every pipeline. You rarely need to change this file; adjust thresholds at the provider or entity level instead.
+
+```yaml
+# configs/base/quality.yaml
+version: "1.0.0"
+
+thresholds:
+  soft_fail: 0.05      # >5% errors → warning, pipeline continues
+  hard_fail: 0.20      # >20% errors → batch fails, records quarantined
+
+strict_validation: false
+invalid_record_policy: quarantine   # quarantine | skip | fail
+
+report:
+  enabled: true
+  format: json
+  include_sample_failures: true
+  sample_size: 10
+  output_path: null
+
+common_field_validations:
+  - field: content_hash
+    type: required
+    nullable: false
+    error_message: "Content hash is required for deduplication"
+
+  - field: _ingestion_ts
+    type: pattern
+    pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}'
+    nullable: false
+    error_message: "Ingestion timestamp must be ISO 8601 format"
+
+common_cross_field_validations: []
+```
+
+The two `common_field_validations` entries apply to every record in every pipeline — `content_hash` ensures deduplication integrity, and `_ingestion_ts` enforces ISO 8601 timestamps.
+
+---
+
+## Level 2: Provider rules
+
+Add a `quality:` section to `configs/providers/{provider}.yaml` to define rules that apply to all entities of a given provider. These rules are merged on top of the global defaults.
+
+```yaml
+# configs/providers/chembl.yaml
+quality:
+  version: 1.0.0
+  provider: chembl
+
+  thresholds:
+    soft_fail: 0.05
+    hard_fail: 0.15     # Tighter than global default for ChEMBL
+
+  provider_field_validations:
+    - field: molecule_id
+      type: pattern
+      pattern: '^CHEMBL\d+$'
+      nullable: true
+      error_message: Invalid ChEMBL molecule ID format
+
+    - field: target_id
+      type: pattern
+      pattern: '^CHEMBL\d+$'
+      nullable: true
+      error_message: Invalid ChEMBL target ID format
+
+    - field: assay_id
+      type: pattern
+      pattern: '^CHEMBL\d+$'
+      nullable: true
+      error_message: Invalid ChEMBL assay ID format
+```
+
+Provider rules are the right place for identifier format checks that apply uniformly across all entities from that source.
+
+---
+
+## Level 3: Entity rules
+
+The `quality:` section in `configs/entities/{provider}/{entity}.yaml` holds entity-specific rules. This is where you define field-level, cross-field, and conditional validations tailored to the data shape of a single entity.
+
+<Tabs>
+  <Tab title="Field validations">
+    ```yaml
+    # configs/entities/chembl/activity.yaml
+    quality:
+      entity_field_validations:
+        - field: activity_id
+          type: required
+          nullable: false
+          error_message: Activity ID is required
+
+        - field: standard_value
+          type: range
+          min: 0
+          max: 1000000000
+          nullable: true
+          error_message: standard_value must be non-negative and below 1B
+
+        - field: pchembl_value
+          type: range
+          min: 0
+          max: 15
+          nullable: true
+          error_message: pChEMBL value must be between 0 and 15
+
+        - field: standard_type
+          type: enum
+          allowed:
+            - IC50
+            - EC50
+            - Ki
+            - Kd
+            - AC50
+            - GI50
+            - Potency
+          nullable: true
+          error_message: Invalid standard_type value
+
+        - field: canonical_smiles
+          type: custom
+          validator: smiles_validator
+          nullable: true
+          error_message: canonical_smiles must be a valid canonical SMILES value when present
+    ```
+  </Tab>
+  <Tab title="Cross-field validations">
+    ```yaml
+    quality:
+      entity_cross_field_validations:
+        - name: value_requires_units
+          fields:
+            - standard_value
+            - standard_units
+          condition: conditional_required
+          trigger_field: standard_value
+          required_field: standard_units
+          error_message: standard_units required when standard_value is present
+
+        - name: activity_completeness
+          fields:
+            - standard_value
+            - standard_units
+            - standard_type
+          condition: all_present
+          error_message: Complete activity data requires value, units, and type
+    ```
+  </Tab>
+  <Tab title="Conditional validations">
+    ```yaml
+    quality:
+      entity_conditional_validations:
+        - name: binding_requires_target
+          condition_field: assay_type
+          condition_value: B
+          condition_operator: eq
+          then_validations:
+            - field: target_id
+              type: required
+              nullable: false
+              error_message: Binding assays must have a target
+
+        - name: ic50_range_check
+          condition_field: standard_type
+          condition_value: IC50
+          condition_operator: eq
+          then_validations:
+            - field: standard_value
+              type: range
+              min: 0.001
+              max: 100000
+              nullable: false
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Validation types
+
+### Field validation types
+
+| Type | Required parameters | Description |
+|---|---|---|
+| `required` | `nullable` | Field must be present. If `nullable: false`, null values also fail. |
+| `range` | `min`, `max`, `nullable` | Numeric bounds check. Either bound can be omitted to leave it open. |
+| `enum` | `allowed`, `nullable` | Value must be one of the items in the `allowed` list. |
+| `pattern` | `pattern`, `nullable` | Value must match the given regular expression. |
+| `custom` | `validator` | Delegates to a named validator function registered in the BioETL validator registry. |
+
+### Cross-field condition types
+
+| Condition | Description |
+|---|---|
+| `conditional_required` | `required_field` must be present when `trigger_field` is non-null. |
+| `all_present` | All listed `fields` must be non-null together. |
+| `any_present` | At least one of the listed `fields` must be non-null. |
+| `mutually_exclusive` | At most one of the listed `fields` may be non-null. |
+
+### Conditional validation operators
+
+| Operator | Description |
+|---|---|
+| `eq` | Condition triggers when field equals `condition_value`. |
+| `ne` | Condition triggers when field does not equal `condition_value`. |
+| `in` | Condition triggers when field value is in the `condition_value` list. |
+| `not_in` | Condition triggers when field value is not in the `condition_value` list. |
+| `gt` / `lt` / `ge` / `le` | Numeric comparisons. |
+
+---
+
+## DQ thresholds
+
+Thresholds determine how BioETL responds to invalid records within a batch.
+
+| Threshold | Default | Behavior |
+|---|---|---|
+| `soft_fail` | `0.05` | Error rate above this value emits a warning but lets the pipeline continue. |
+| `hard_fail` | `0.20` | Error rate above this value fails the current batch and quarantines all records in it. |
+
+You can tighten thresholds for a specific entity by overriding them in the entity-level `quality:` section:
+
+```yaml
+# configs/entities/chembl/activity.yaml
+quality:
+  thresholds:
+    soft_fail: 0.02
+    hard_fail: 0.10
+```
+
+The environment variables `BIOETL_DQ_SOFT_THRESHOLD` and `BIOETL_DQ_HARD_THRESHOLD` set the global baseline. See [Environment variables](/configuration/environment-variables) for details.
+
+<Warning>
+  `soft_fail` must always be strictly less than `hard_fail`. BioETL validates this at startup and refuses to run if the invariant is violated.
+</Warning>
+
+---
+
+## Inline overrides (level 4)
+
+For temporary exceptions — such as a migration period when a legacy field is unexpectedly nullable — you can override DQ rules directly in the `pipeline:` section of an entity config without changing the shared rule files.
+
+```yaml
+# configs/entities/chembl/activity.yaml
+pipeline:
+  pipeline_name: chembl_activity
+
+  dq_overrides:
+    thresholds:
+      soft_fail: 0.10
+      hard_fail: 0.30
+    field_validations:
+      - field: legacy_id
+        type: required
+        nullable: false
+```
+
+<Warning>
+  Inline overrides are intended for temporary exceptions. For any rule that should persist, add it to the appropriate entity, provider, or global config file so it benefits from version control and review.
+</Warning>
+
+---
+
+## Testing DQ rules
+
+Before running a full pipeline, you can validate your rules and preview how they would behave against the resolved configuration.
+
+<Steps>
+  <Step title="Show the resolved rules">
+    ```bash
+    bioetl dq validate --entity chembl.activity --show-rules
+    ```
+    Prints the fully merged DQ rule set — global + provider + entity — that will be applied at runtime. This is the fastest way to verify that your edits are being picked up and merged correctly.
+  </Step>
+  <Step title="Validate entity config">
+    ```bash
+    bioetl config validate chembl_activity
+    ```
+    Runs Pydantic validation on the merged pipeline config and reports schema errors before you run the pipeline.
+  </Step>
+</Steps>
+
+---
+
+## Inspecting quarantined records
+
+When records fail the hard threshold, BioETL quarantines them and records the reason code. Use the `quarantine` CLI command to investigate.
+
+```bash
+# Summarize quarantined records by reason code
+bioetl quarantine stats --pipeline chembl_activity --group-by reason-code
+
+# List quarantined records with their payloads
+bioetl quarantine list --pipeline chembl_activity --limit 50
+```
+
+The `reason-code` grouping shows you which rules are triggering the most failures, which is a useful signal for deciding whether to tighten, loosen, or fix upstream data.
+
+<Tip>
+  If a rule is quarantining too many valid records, check whether the field is genuinely required or just inconsistently populated by the provider. You may need to set `nullable: true` or widen a `range` bound.
+</Tip>
+
+---
+
+## Adding DQ rules for a new entity
+
+<Steps>
+  <Step title="Check or create the provider config">
+    If `configs/providers/{provider}.yaml` does not yet exist, create it with a minimal `quality:` section:
+
+    ```yaml
+    version: "1.0.0"
+    provider: myprovider
+
+    quality:
+      provider_field_validations: []
+    ```
+  </Step>
+  <Step title="Add the quality section to the entity config">
+    Open `configs/entities/{provider}/{entity}.yaml` and add a `quality:` block. At minimum, add a `required` validation for the entity's primary key:
+
+    ```yaml
+    quality:
+      entity_field_validations:
+        - field: primary_id
+          type: required
+          nullable: false
+          error_message: "Primary ID is required"
+    ```
+  </Step>
+  <Step title="Verify the resolved rules">
+    ```bash
+    bioetl dq validate --entity {provider}.{entity} --show-rules
+    ```
+    Confirm that your new rules appear in the output alongside the inherited global and provider rules.
+  </Step>
+  <Step title="Run the pipeline in test mode">
+    ```bash
+    bioetl run --pipeline {provider}_{entity} --limit 100
+    ```
+    Use a small record limit to exercise the DQ rules before committing to a full run.
+  </Step>
+</Steps>

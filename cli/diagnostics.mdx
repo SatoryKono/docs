@@ -1,0 +1,203 @@
+---
+title: "bioetl diagnostics — generate a system health report"
+sidebarTitle: "bioetl diagnostics"
+description: "Generate a unified system health and metrics report with bioetl diagnostics, and validate configuration with bioetl config, dq, and lineage commands."
+---
+
+The `diagnostics` command produces a unified operational report covering performance metrics, provider health checks, checkpoint state, run manifests, and quarantine statistics. You can run it with no arguments to get a full picture of system health, or pass flags to focus on specific areas.
+
+This page also covers the `config`, `dq`, and `lineage` commands, which round out the diagnostic and validation surface.
+
+## bioetl diagnostics
+
+**Syntax:**
+
+```bash
+bioetl diagnostics [OPTIONS]
+```
+
+### Options
+
+<ParamField query="--metrics" type="flag" default="true">
+  Include performance metrics in the report.
+</ParamField>
+
+<ParamField query="--health" type="flag" default="true">
+  Include provider health checks in the report.
+</ParamField>
+
+<ParamField query="--checkpoints" type="flag" default="true">
+  Include checkpoint state information in the report.
+</ParamField>
+
+<ParamField query="--manifests" type="flag" default="true">
+  Include run manifest and ledger data in the report.
+</ParamField>
+
+<ParamField query="--quarantine" type="flag" default="true">
+  Include quarantine statistics in the report.
+</ParamField>
+
+<ParamField query="--json" type="flag" default="false">
+  Output the report as JSON instead of human-readable text.
+</ParamField>
+
+<ParamField query="--output, -o" type="path">
+  Save the report to a file instead of printing to stdout.
+</ParamField>
+
+<ParamField query="--since" type="string" default="1h">
+  Time window for metrics. Accepts values like `1h`, `24h`, or `7d`.
+</ParamField>
+
+<ParamField query="--pipeline" type="string">
+  Restrict the report to a specific pipeline name.
+</ParamField>
+
+### Examples
+
+```bash
+# Full system report (all sections enabled)
+bioetl diagnostics
+
+# Metrics and health checks only
+bioetl diagnostics --checkpoints=false --manifests=false --quarantine=false
+
+# Save a JSON report to a file
+bioetl diagnostics --json --output system-diagnostics.json
+
+# Report covering the last 24 hours
+bioetl diagnostics --since 24h
+
+# Diagnostics for a single pipeline
+bioetl diagnostics --pipeline chembl_activity
+```
+
+---
+
+## bioetl config
+
+The `config` command group lets you view and validate pipeline configuration and global settings.
+
+### config show-settings
+
+Shows all active global settings, including every `BIOETL_*` environment variable. API keys are masked in the output.
+
+```bash
+bioetl config show-settings
+bioetl config show-settings --format json
+```
+
+### config list-pipelines
+
+Lists every pipeline available in `configs/entities/`.
+
+```bash
+bioetl config list-pipelines
+```
+
+### config show
+
+Shows the resolved configuration for a specific pipeline, after YAML parsing and defaults are applied.
+
+```bash
+bioetl config show chembl_activity
+bioetl config show chembl_activity --format json
+```
+
+### config validate
+
+Validates the configuration for a specific pipeline and prints a summary of key properties: provider name, entity type, Silver table, and Gold table (if configured).
+
+```bash
+bioetl config validate chembl_activity
+```
+
+<Tip>
+Run `bioetl config validate` after editing a pipeline YAML file to catch schema errors and misconfigured field names before running the pipeline.
+</Tip>
+
+---
+
+## bioetl dq
+
+The `dq` command group validates data quality configuration and rules.
+
+### dq validate
+
+Validates the DQ rule configuration for a specific entity and optionally shows the full rule set.
+
+**Syntax:**
+
+```bash
+bioetl dq validate --entity <PROVIDER.ENTITY> [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--entity` | string | — | Entity in `provider.entity` format, for example `chembl.activity` |
+| `--strict` | flag | false | Treat warnings as failures |
+| `--show-rules` | flag | false | Print all DQ rules for the entity |
+| `--test-data` | path | — | Validate against a custom data file |
+
+```bash
+# Validate DQ configuration for an entity
+bioetl dq validate --entity chembl.activity
+
+# Show all DQ rules
+bioetl dq validate --entity chembl.activity --show-rules
+
+# Strict validation — warnings cause a non-zero exit
+bioetl dq validate --entity chembl.activity --strict
+```
+
+---
+
+## bioetl lineage
+
+The `lineage` command lets you trace the origin and transformation history of individual records.
+
+### lineage show
+
+Shows the data lineage graph for a single record, following upstream sources and transformations up to the specified depth.
+
+**Syntax:**
+
+```bash
+bioetl lineage show --entity <PROVIDER.ENTITY> --record-id <ID> [OPTIONS]
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--entity` | string | — | Entity in `provider.entity` format |
+| `--record-id` | string | — | The record identifier |
+| `--format, -f` | choice | `text` | Output format: `text`, `json`, or `dot` (Graphviz) |
+| `--depth, -d` | integer | `3` | Depth of the lineage graph to traverse |
+| `--include-fields` | flag | false | Include field-level lineage in the output |
+| `--output, -o` | path | — | Save the output to a file |
+
+```bash
+# Show lineage for a record in text format
+bioetl lineage show --entity chembl.activity --record-id ACT12345
+
+# Output as JSON
+bioetl lineage show --entity chembl.activity --record-id ACT12345 --format json
+
+# Export a Graphviz DOT file for visualization
+bioetl lineage show \
+    --entity chembl.activity \
+    --record-id ACT12345 \
+    --format dot \
+    --output lineage.dot
+
+# Full lineage with field-level details
+bioetl lineage show \
+    --entity chembl.activity \
+    --record-id ACT12345 \
+    --depth 5 \
+    --include-fields
+```
+
+<Note>
+Field-level lineage and deeper graph traversals are only available when `--tracing` was active during the pipeline run that produced the record.
+</Note>

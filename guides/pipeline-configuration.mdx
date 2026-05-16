@@ -1,0 +1,253 @@
+---
+title: "Configure BioETL pipelines using YAML config files"
+sidebarTitle: "Configure Pipelines"
+description: "Understand the YAML config hierarchy, key pipeline fields, and how to inspect, validate, and list pipeline configurations from the command line."
+---
+
+Every BioETL pipeline is driven by a YAML configuration file. The config
+controls which data source to extract from, how records are validated, what
+filters apply, and how data is written to the Silver and Gold layers. This page
+explains the config hierarchy, walks through a real entity config, and shows
+the CLI commands that let you inspect the resolved configuration at runtime.
+
+## Config file layout
+
+Pipeline configs live in the `configs/` directory and are split across three
+levels that inherit from one another:
+
+```text
+configs/
+├── base/
+│   ├── pipeline.yaml       # Global defaults for all pipelines
+│   └── quality.yaml        # Global data quality defaults
+├── providers/
+│   └── {provider}.yaml     # Source-level settings and provider-specific defaults
+├── entities/
+│   └── {provider}/
+│       └── {entity}.yaml   # Per-entity config (the file you edit most often)
+├── composites/
+│   └── {entity}.yaml       # Composite pipeline definitions
+└── workflows/
+    └── {name}.yaml         # Declarative workflow DAGs
+```
+
+When BioETL resolves a pipeline's effective configuration, it merges these
+files from most-general to most-specific. An entity config can override
+anything set in the provider or base configs.
+
+## Config hierarchy
+
+<Steps>
+  <Step title="Base defaults">
+    `configs/base/pipeline.yaml` sets system-wide defaults: batch size, sink
+    formats, maintenance settings, and filter scaffolding. You rarely need to
+    edit this file directly.
+  </Step>
+  <Step title="Provider settings">
+    `configs/providers/{provider}.yaml` sets source-level configuration such as
+    API credentials, rate limits, and provider-wide quality thresholds.
+  </Step>
+  <Step title="Entity config">
+    `configs/entities/{provider}/{entity}.yaml` is the primary file for each
+    pipeline. It specifies the entity type, primary keys, Silver/Gold sink
+    behaviour, schema groups, data quality rules, and Silver filters.
+  </Step>
+</Steps>
+
+## Key configuration fields
+
+The table below describes the most important fields you configure in an entity
+YAML:
+
+| Field | Description |
+|---|---|
+| `provider` | The data source provider (e.g. `chembl`, `pubchem`) |
+| `entity` | The entity type being ingested (e.g. `activity`, `compound`) |
+| `pipeline.pipeline_name` | The name used in CLI commands such as `bioetl run --pipeline <name>` |
+| `pipeline.business_primary_keys` | Fields that uniquely identify a business record |
+| `pipeline.batch_size` | Number of records fetched per API call |
+| `pipeline.sink.silver.mode` | How records are written to Silver (`merge` by default) |
+| `pipeline.sink.gold.enabled` | Whether the Gold layer is populated |
+| `quality.entity_field_validations` | Per-field validation rules (required, range, enum, pattern) |
+| `filters.extraction_params` | API-level query parameters applied at fetch time |
+| `filters.silver_filters` | Column, range, and required-field filters applied before Silver write |
+
+## Example: ChEMBL activity config
+
+Below is the actual config for the `chembl_activity` pipeline, trimmed to the
+sections most relevant to operators:
+
+```yaml
+version: 1.0.0
+provider: chembl
+entity: activity
+
+pipeline:
+  pipeline_name: chembl_activity
+  provider: chembl
+  entity_type: activity
+  description: Extract biological activity records from ChEMBL API
+  business_primary_keys:
+    - activity_id
+  batch_size: 1000
+  sink:
+    silver:
+      mode: merge
+      idempotency_contract: merge_upsert
+    gold:
+      enabled: true
+
+quality:
+  version: 1.1.0
+  entity_field_validations:
+    - field: activity_id
+      type: required
+      nullable: false
+      error_message: Activity ID is required
+    - field: standard_value
+      type: range
+      min: 0
+      max: 1000000000
+      nullable: true
+      error_message: standard_value must be non-negative and below 1B
+    - field: pchembl_value
+      type: range
+      min: 0
+      max: 15
+      nullable: true
+      error_message: pChEMBL value must be between 0 and 15
+    - field: standard_type
+      type: enum
+      allowed: [IC50, EC50, Ki, Kd, AC50, GI50, Potency, Inhibition,
+                "% Inhibition", Activity, Ratio, ED50, ID50]
+      nullable: true
+
+filters:
+  extraction_params:
+    standard_type__in: IC50,Ki
+    standard_units: nM
+    standard_relation: "="
+    assay_type__in: B,F
+    potential_duplicate: 0
+    pchembl_value__isnull: false
+    standard_flag: 1
+  silver_filters:
+    columns:
+      standard_type: [IC50, Ki]
+      standard_units: [nM]
+      standard_relation: ["="]
+      assay_type: [B, F]
+      potential_duplicate: [0]
+    ranges:
+      pchembl_value:
+        min: 3
+        max: 10
+      publication_year:
+        min: 1950
+        max: 2050
+    required_fields:
+      - activity_id
+      - molecule_id
+      - canonical_smiles
+      - standard_value
+      - standard_units
+      - pchembl_value
+```
+
+<Note>
+`extraction_params` are passed directly to the upstream API as query filters,
+reducing the volume of data fetched. `silver_filters` are applied in-process
+after Bronze ingestion before records are written to Silver.
+</Note>
+
+## Base pipeline defaults
+
+The `configs/base/pipeline.yaml` file defines the defaults inherited by every
+pipeline. You can see the key sink settings it provides:
+
+```yaml
+version: "1.2.0"
+
+sink:
+  bronze:
+    format: jsonl
+    save_json: true
+    flat_structure: true
+  silver:
+    format: delta
+    mode: merge
+    idempotency_contract: merge_upsert
+    on_schema_mismatch: evolve
+  gold:
+    enabled: true
+    format: delta
+    mode: scd2
+    idempotency_contract: scd2
+
+maintenance:
+  auto_vacuum: false
+  vacuum_retention_days: 7
+```
+
+Entity configs override these defaults at the field level. For example, the
+`chembl_activity` config sets `gold.enabled: true` to explicitly activate the
+Gold layer for that pipeline.
+
+## Inspect the resolved config
+
+To see the fully merged configuration that BioETL will use at runtime —
+combining base, provider, and entity files — use `config show`:
+
+```bash
+# Human-readable YAML output
+bioetl config show chembl_activity
+
+# Machine-readable JSON output
+bioetl config show chembl_activity --format json
+```
+
+This is the canonical way to verify that your overrides are taking effect.
+
+## Validate a config
+
+Before running a pipeline, confirm that the config parses correctly and all
+required fields are present:
+
+```bash
+bioetl config validate chembl_activity
+```
+
+The command prints the resolved provider, entity type, Silver table, and Gold
+table (if enabled), and exits non-zero if anything is misconfigured.
+
+## List all pipelines
+
+To see every pipeline registered in `configs/entities/`:
+
+```bash
+bioetl config list-pipelines
+```
+
+This is the authoritative source for valid `--pipeline` names. If a name is not
+shown here, `bioetl run` will raise a `PipelineNotFoundError`.
+
+## Composite pipeline configs
+
+Composite pipelines are defined in `configs/composites/{name}.yaml`. These
+configs declare a seed pipeline and a set of enrichers, each of which is itself
+a standard entity pipeline. To list and inspect them:
+
+```bash
+# List available composite pipelines
+bioetl run-composite --composite publication --dry-run
+
+# Inspect a composite config's effective settings
+bioetl config show publication
+```
+
+## Workflow configs
+
+Declarative workflows live in `configs/workflows/{name}.yaml`. A workflow
+defines a DAG of pipeline steps with optional dependencies between them. Use
+`bioetl workflow run <name>` to execute and `bioetl workflow status <name>` to
+inspect the last run's state.
